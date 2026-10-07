@@ -25,6 +25,15 @@ namespace Match3Engine.Core
         // turn ahead of the animation, so I keep my own copy and advance it step by step.
         public LevelProgress Progress { get; private set; }
 
+        // The game itself. A bot reads this to choose its move.
+        public GameSimulation Simulation => simulation;
+
+        // True while a move is being animated. Swaps sent now are ignored.
+        public bool IsBusy => isBusy;
+
+        // The seed the current attempt was dealt from
+        public int CurrentSeed { get; private set; }
+
         [Header("Level")]
         public LevelData level;
 
@@ -44,15 +53,38 @@ namespace Match3Engine.Core
                 return;
             }
 
-            int levelSeed = seed != 0 ? seed : System.Environment.TickCount;
-
-            simulation = new GameSimulation(level, levelSeed);
-            Progress = new LevelProgress(level.moveLimit, level.goals);
+            BeginAttempt();
 
             boardView.InitializeBoard(simulation.Board);
-
             boardView.CenterAndScaleCamera(level.width, level.height);
 
+            ShowSimulationState();
+        }
+
+        // A fresh game of the same level
+        private void BeginAttempt()
+        {
+            CurrentSeed = seed != 0 ? seed : System.Environment.TickCount;
+            simulation = new GameSimulation(level, CurrentSeed);
+        }
+
+        // Starts the level over. With seed 0 this deals a new board; with a fixed seed, the same one.
+        public void RestartLevel()
+        {
+            if (simulation == null || isBusy) return;
+
+            BeginAttempt();
+            boardView.SetBoard(simulation.Board);
+            ShowSimulationState();
+        }
+
+        // Jumps the screen straight to where the simulation is now, with no animation.
+        // Used at the start, and after a game was finished off-screen.
+        public void ShowSimulationState()
+        {
+            if (simulation == null || isBusy) return;
+
+            Progress = simulation.Progress.Clone();
             boardView.SyncVisualsWithData(GetSpriteForType);
             levelHud.Refresh(Progress);
         }

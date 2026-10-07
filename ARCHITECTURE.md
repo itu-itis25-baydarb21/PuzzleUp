@@ -6,7 +6,7 @@ A match-3 puzzle prototype built in Unity. The code lives in a single namespace 
 |---|---|
 | Unity version | 6000.3.10f1 (Unity 6) |
 | Render pipeline | Built-in, 2D feature set |
-| Input | New Input System package (`com.unity.inputsystem` 1.18.0), polled directly |
+| Input | A bot plays the board. UI buttons use the new Input System (`com.unity.inputsystem` 1.18.0) through `InputSystemUIInputModule` |
 | Assemblies | `Match3Engine` (all game code, `Assets/Scripts`), `Match3Engine.Editor` (`Assets/Editor`) and `Match3Engine.Tests.EditMode` (`Assets/Tests/EditMode`) |
 | Tests | 23 edit-mode tests that run whole games with no scene |
 | Scene | `Assets/Scenes/SampleScene.unity` (the only scene in the build) |
@@ -39,7 +39,7 @@ Assets/
 │   │   ├── SpawnSystem.cs        Seeded random refill and match-free starting fill
 │   │   ├── MoveFinder.cs         Which swaps are valid
 │   │   ├── PowerUpSystem.cs      Explosion area calculation
-│   │   └── InputSystem.cs        MonoBehaviour: swipe → swap request
+│   │   └── InputSystem.cs        MonoBehaviour: swipe → swap request (disabled in the scene)
 │   ├── Simulation/               A whole game with no visuals (pure C#)
 │   │   ├── GameSimulation.cs     Resolves a full move instantly; owns board, progress, systems
 │   │   ├── TurnResult.cs         What a move did, as steps the view can replay
@@ -47,10 +47,12 @@ Assets/
 │   ├── View/                     Presentation
 │   │   ├── BoardView.cs          Grid of TileViews, camera fitting
 │   │   ├── TileView.cs           One sprite, lerps to a target position
-│   │   └── LevelHud.cs           Moves, goals and result text (uGUI + TextMesh Pro)
+│   │   ├── LevelHud.cs           Moves, goals and result text (uGUI + TextMesh Pro)
+│   │   └── WatchControls.cs      Speed, skip and play-again buttons
 │   └── AI/                       Simulated players (pure C#)
 │       ├── Bots.cs               IBot, the four strategies, SkillBot, BotFactory
-│       └── BatchRunner.cs        Plays a level many times and collects the results
+│       ├── BatchRunner.cs        Plays a level many times and collects the results
+│       └── BotPlayer.cs          MonoBehaviour: a bot playing the level on screen
 ├── Editor/BotBatchMenu.cs        Menu command: Puzzle Up > Run Bot Batch
 ├── Tests/EditMode/               GameSimulationTests, BotTests, ObstacleTests + test assembly definition
 ├── Levels/                       Level_01 (plain board) and Level_02 (crates and holes; the one the scene loads)
@@ -63,8 +65,9 @@ Assets/
 
 ```mermaid
 flowchart TD
-    Input["InputSystem<br/>(MonoBehaviour)"] -->|ProcessPlayerSwap(a, b)| GC
-    Bots["Bots, tests<br/>(no scene needed)"] -->|PlayMove(a, b)| SIM
+    BP["BotPlayer<br/>(MonoBehaviour)"] -->|ProcessPlayerSwap(a, b)| GC
+    BP -->|read board, choose move| SIM
+    Bots["Batch runs, tests<br/>(no scene needed)"] -->|PlayMove(a, b)| SIM
 
     GC["GameController<br/>(MonoBehaviour)"] -->|PlayMove(a, b)| SIM
     SIM -->|TurnResult| GC
@@ -141,6 +144,8 @@ Inspector-configured: the `LevelData` to play, a `seed` (0 means a new one every
 
 `Start()` creates a `GameSimulation` for the level, asks the view to instantiate the tile grid and fit the camera, and paints the starting board.
 
+`RestartLevel()` deals a new attempt of the same level onto the existing tile views (a new board with seed 0, the same board with a fixed seed). `ShowSimulationState()` jumps the screen straight to wherever the simulation is, with no animation; it is used at the start and after a game was finished off-screen. Both are ignored while a move is animating. `Simulation`, `IsBusy` and `CurrentSeed` are exposed for whoever is playing.
+
 It keeps its own `LevelProgress` for what is **shown on screen**. The simulation's progress is always a full turn ahead of the animation, so the controller advances its copy step by step as each cascade is displayed. Both end every turn with the same values.
 
 ## 4. Turn flow
@@ -188,7 +193,7 @@ A `TurnResult` holds `valid`, `shuffled`, and one `CascadeStep` per cascade. Eac
 
 ### On screen (animated)
 
-`InputSystem` calls `GameController.ProcessPlayerSwap(posA, posB)`, which starts `PlayTurnRoutine`:
+`BotPlayer` calls `GameController.ProcessPlayerSwap(posA, posB)`, which starts `PlayTurnRoutine`:
 
 1. Call `simulation.PlayMove` — the turn is now decided.
 2. Animate the swap (0.25 s). If the result is not valid, animate it back and stop; no move is spent.
@@ -277,6 +282,14 @@ Ties are broken at random. `SkillBot` wraps a strategy with a skill from 0 to 1:
 ### `BatchRunner`
 `PlayGame(level, bot, seed)` plays one whole game headless and returns a `GameResult { won, movesLeft, goalProgress }`. `Run(level, createBot, games, firstSeed)` plays many; game *i* uses seed `firstSeed + i` for both the board and the bot, so the same call always returns the same `BatchResult`. That result keeps every `GameResult` and offers `PassRate`, `AverageMovesLeft` (wins only) and `AverageProgressWhenLost`.
 
+### Watching a bot play
+`BotPlayer` is the on-screen player. Each frame, if the controller is not busy and the level is still running, it waits `thinkTime` seconds, asks its bot for a move and sends it to `GameController.ProcessPlayerSwap` — the same entry point a swipe uses. Its `strategy` and `skill` are set in the Inspector.
+
+- **Seed.** The bot is created from `GameController.CurrentSeed`, so a fixed seed always shows the same game, and that game is identical to the one `BatchRunner` plays for the same seed, strategy and skill.
+- **Speed.** `SetSpeed` sets `Time.timeScale`, which scales the animation delays, the tile movement and the think time together. It is reset to 1 when the component is disabled.
+- **Skip.** `Skip()` waits for the move on screen to finish, plays the rest of the game directly on the simulation, then calls `ShowSimulationState()`.
+- **Play again.** `PlayAgain()` calls `RestartLevel()` and discards the bot so a new one is made for the new seed.
+
 ### Running a batch from the editor
 **Puzzle Up → Run Bot Batch** plays the selected `LevelData` asset (or, with none selected, the level on the open scene's `GameController`) 1,000 times with each strategy and with `GoalAwareBot` at skill 0.25, 0.5 and 0.75, and prints a table to the Console. The whole run takes roughly 25 seconds, most of it the look-ahead bot.
 
@@ -303,16 +316,20 @@ Holds a `SpriteRenderer`. `UpdateVisuals` assigns the sprite and rescales it to 
 ### `LevelHud`
 Sits on the `HudCanvas`. `Refresh(progress)` writes the moves left and each goal's remaining count (or "Done") into two TextMesh Pro labels, and shows a dimmed full-screen panel with "Level Complete!" or "Out of Moves" when the level ends. It only displays what the controller gives it.
 
+### `WatchControls`
+Sits on the `HudCanvas` and wires the buttons to `BotPlayer`: three speed buttons (1×, 2×, 4×, the active one tinted), Skip, and Play Again on the result panel. It also shows which bot is playing.
+
 ## 8. Scene wiring
 
-`SampleScene` has four root objects:
+`SampleScene` has five root objects:
 
 | GameObject | Components | Notes |
 |---|---|---|
 | `Main Camera` | Camera | Repositioned and resized at runtime by `BoardView` |
-| `GameManager` | `GameController`, `BoardView`, `InputSystem` | All references are wired in the Inspector |
+| `GameManager` | `GameController`, `BoardView`, `BotPlayer`, `InputSystem` (disabled) | All references are wired in the Inspector. `BotPlayer` is set to GoalAware at skill 0.5 |
+| `EventSystem` | EventSystem, `InputSystemUIInputModule` | Needed for the UI buttons |
 | `Board` | Transform only | Parent for instantiated tiles |
-| `HudCanvas` | Canvas, CanvasScaler, GraphicRaycaster, `LevelHud` | Screen Space Overlay, scales with screen size (1080×1920 reference). Children: `MovesText`, `GoalsText`, `ResultPanel` → `ResultText` |
+| `HudCanvas` | Canvas, CanvasScaler, GraphicRaycaster, `LevelHud`, `WatchControls` | Screen Space Overlay, scales with screen size (1080×1920 reference). Children: `MovesText`, `GoalsText`, `WatchBar` (speed and skip buttons), `BotLabel`, `ResultPanel` → `ResultText`, `AgainButton` |
 
 `GameController` points at `Assets/Levels/Level_02.asset`:
 
@@ -330,13 +347,15 @@ Behaviours visible in the current code that are worth knowing before extending i
 
 1. **Power-ups do not chain.** A power-up caught in another explosion is simply removed without firing.
 2. **ColorBomb + power-up** destroys only tiles of that power-up's type, since the swapped tile's type is used as the target "colour".
-3. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is no restart or next level (stop and press Play again), no score, audio or persistence.
+3. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is no next level, no score, audio or persistence.
 4. **A shuffle is not animated.** The board is simply repainted in its new arrangement.
-5. **Bots only run from an editor menu.** Nothing in the game itself starts a batch or shows its results yet, and no bot plays on the animated board.
+5. **Batch results only appear in the Console.** Nothing in the game itself starts a batch or shows its numbers yet. The on-screen bot's strategy and skill can only be changed in the Inspector.
 6. **The look-ahead bot is slow** compared with the others — about 14 seconds per 1,000 games on `Level_01`, against 1 to 3 seconds.
 7. **Crates fall; there is no fixed blocker.** An obstacle that stays put and stops tiles falling would need tiles to slide in diagonally underneath it, which gravity does not do.
 8. **Obstacles are placed by typing coordinates** into the level asset's `obstacles` list. There is no grid to paint them on.
 9. **The crate sprite is a generated placeholder**, and the board has no background, so a hole is only visible as a missing tile.
+10. **A human cannot play.** The swipe `InputSystem` component is disabled in the scene. Enabling it works, but it would compete with the bot for the same board.
+11. **Speed is global.** It uses `Time.timeScale`, so anything else that runs on game time speeds up with it.
 
 ## 10. Extension points
 

@@ -39,6 +39,12 @@ namespace Match3Engine.View
             }
         }
 
+        // Points my existing tiles at a different data grid of the same size, for a restarted level
+        public void SetBoard(BoardModel model)
+        {
+            dataModel = model;
+        }
+
         // A mask the exact size of the board, so tiles are only drawn while they are inside it
         private void CreateBoardMask(int width, int height)
         {
