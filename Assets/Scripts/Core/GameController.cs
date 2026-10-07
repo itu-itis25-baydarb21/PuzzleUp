@@ -1,7 +1,5 @@
-using Match3Engine.Commands;
-using Match3Engine.Systems;
+using Match3Engine.Simulation;
 using Match3Engine.View;
-using System.Collections.Generic;
 using UnityEngine;
 using System.Collections;
 
@@ -14,23 +12,24 @@ namespace Match3Engine.Core
         public Sprite sprite;
     }
 
+    // Plays one level on screen. The simulation decides everything instantly;
+    // my job here is to replay what it reports, one animated step at a time.
     public class GameController : MonoBehaviour
     {
-        private BoardModel boardModel;
-        private CommandSystem commandSystem;
-        private MatchSystem matchSystem;
-        private GravitySystem gravitySystem;
-        private SpawnSystem spawnSystem;
-        private PowerUpSystem powerUpSystem; 
+        private GameSimulation simulation;
 
         // True from the moment a swap starts until the board has fully settled
         private bool isBusy;
 
-        // Moves and goals for the current attempt
+        // Moves and goals as currently shown on screen. The simulation is always a full
+        // turn ahead of the animation, so I keep my own copy and advance it step by step.
         public LevelProgress Progress { get; private set; }
 
         [Header("Level")]
         public LevelData level;
+
+        [Tooltip("The same seed always deals the same tiles. 0 picks a new seed every time.")]
+        public int seed;
 
         [Header("View References")]
         public BoardView boardView;
@@ -45,20 +44,15 @@ namespace Match3Engine.Core
                 return;
             }
 
-            boardModel = new BoardModel(level.width, level.height);
+            int levelSeed = seed != 0 ? seed : System.Environment.TickCount;
+
+            simulation = new GameSimulation(level, levelSeed);
             Progress = new LevelProgress(level.moveLimit, level.goals);
 
-            commandSystem = new CommandSystem();
-            matchSystem = new MatchSystem(boardModel);
-            gravitySystem = new GravitySystem(boardModel);
-            spawnSystem = new SpawnSystem(boardModel, level.availableTileTypes);
-            powerUpSystem = new PowerUpSystem(boardModel); 
-
-            boardView.InitializeBoard(boardModel);
+            boardView.InitializeBoard(simulation.Board);
 
             boardView.CenterAndScaleCamera(level.width, level.height);
 
-            spawnSystem.SpawnTiles();
             boardView.SyncVisualsWithData(GetSpriteForType);
             levelHud.Refresh(Progress);
         }
@@ -81,141 +75,71 @@ namespace Match3Engine.Core
 
             // Ignoring swipes while the board is still animating, or ones that leave the board
             if (isBusy) return;
-            if (!boardModel.IsValidPosition(posA.x, posA.y) || !boardModel.IsValidPosition(posB.x, posB.y)) return;
+            if (!simulation.Board.IsValidPosition(posA.x, posA.y) || !simulation.Board.IsValidPosition(posB.x, posB.y)) return;
 
             // Starting my timeline routine so animations have time to play
-            StartCoroutine(SwapAndProcessRoutine(posA, posB));
+            StartCoroutine(PlayTurnRoutine(posA, posB));
         }
 
-        private IEnumerator SwapAndProcessRoutine(Vector2Int posA, Vector2Int posB)
+        private IEnumerator PlayTurnRoutine(Vector2Int posA, Vector2Int posB)
         {
             isBusy = true;
 
+            // The simulation resolves the whole move right now. Everything after this is animation.
+            TurnResult turn = simulation.PlayMove(posA, posB);
+
             boardView.SwapVisuals(posA, posB);
-
-            ICommand swapCmd = new SwapCommand(boardModel, posA, posB);
-            commandSystem.EnqueueCommand(swapCmd);
-            commandSystem.ProcessNextCommand();
-
             yield return new WaitForSeconds(0.25f);
 
-            TileType typeAtA = boardModel.GetTile(posA.x, posA.y);
-            TileType typeAtB = boardModel.GetTile(posB.x, posB.y);
-
-            bool isPowerUpA = powerUpSystem.IsPowerUp(typeAtA);
-            bool isPowerUpB = powerUpSystem.IsPowerUp(typeAtB);
-
-            if (isPowerUpA || isPowerUpB)
+            if (!turn.valid)
             {
-                HashSet<Vector2Int> explosionArea = new HashSet<Vector2Int>();
-
-                if (isPowerUpA) explosionArea.UnionWith(powerUpSystem.GetExplosionArea(posA, typeAtA, typeAtB));
-                if (isPowerUpB) explosionArea.UnionWith(powerUpSystem.GetExplosionArea(posB, typeAtB, typeAtA));
-
-                MatchResult powerUpResult = new MatchResult();
-                powerUpResult.matchedTiles = explosionArea;
-
-                SpendMove();
-                yield return DestroyAndRefillRoutine(powerUpResult);
-                yield return RunGameplayPipelineRoutine(new Vector2Int(-1, -1), new Vector2Int(-1, -1));
-
-                FinishTurn();
-                yield break;
-            }
-
-            MatchResult matchResult = matchSystem.FindMatches(posA, posB);
-
-            if (matchResult.matchedTiles.Count == 0)
-            {
+                // The swap did nothing, so the tiles slide back and no move is spent
                 boardView.SwapVisuals(posA, posB);
-
-                ICommand revertCmd = new SwapCommand(boardModel, posA, posB);
-                commandSystem.EnqueueCommand(revertCmd);
-                commandSystem.ProcessNextCommand();
-
                 yield return new WaitForSeconds(0.25f);
 
                 isBusy = false;
                 yield break;
             }
 
-            // Passing the exact touch coordinates into my pipeline so it knows where to spawn specials!
-            SpendMove();
-            yield return RunGameplayPipelineRoutine(posA, posB);
-
-            FinishTurn();
-        }
-
-        // Only swaps that actually do something cost a move; reverted swaps are free
-        private void SpendMove()
-        {
             Progress.UseMove();
             levelHud.Refresh(Progress);
-        }
 
-        // The board has settled, so now I can decide if the level is won or lost
-        private void FinishTurn()
-        {
+            foreach (CascadeStep step in turn.steps)
+            {
+                yield return PlayStepRoutine(step);
+            }
+
+            if (turn.shuffled)
+            {
+                // No moves were left, so the simulation mixed the board
+                boardView.SyncVisualsWithData(GetSpriteForType);
+                yield return new WaitForSeconds(0.3f);
+            }
+
+            // The board has settled, so now I can show if the level is won or lost
             Progress.Evaluate();
             levelHud.Refresh(Progress);
+
             isBusy = false;
         }
 
-        private IEnumerator RunGameplayPipelineRoutine(Vector2Int initialSwapA, Vector2Int initialSwapB)
+        // Shows one cascade: tiles disappear, then the survivors and the new tiles fall together
+        private IEnumerator PlayStepRoutine(CascadeStep step)
         {
-            bool cascadeHappened = true;
-
-            // Tracking the current swap positions. 
-            Vector2Int currentSwapA = initialSwapA;
-            Vector2Int currentSwapB = initialSwapB;
-
-            while (cascadeHappened)
+            foreach (PlacedTile tile in step.destroyed)
             {
-                cascadeHappened = false;
-
-                // Using the actual coordinates for the first match, and (-1,-1) for cascades
-                MatchResult matchResult = matchSystem.FindMatches(currentSwapA, currentSwapB);
-
-                if (matchResult.matchedTiles.Count > 0)
-                {
-                    cascadeHappened = true;
-
-                    yield return DestroyAndRefillRoutine(matchResult);
-
-                    // Resetting the swap coordinates for any chain reactions (cascades)
-                    currentSwapA = new Vector2Int(-1, -1);
-                    currentSwapB = new Vector2Int(-1, -1);
-                }
-            }
-        }
-
-        // Clears the given tiles, then lets the survivors and the new tiles fall into place together
-        private IEnumerator DestroyAndRefillRoutine(MatchResult result)
-        {
-            // Counting what is about to be destroyed towards my goals, before the types are wiped
-            foreach (Vector2Int pos in result.matchedTiles)
-            {
-                Progress.Collect(boardModel.GetTile(pos.x, pos.y));
+                Progress.Collect(tile.type);
             }
             levelHud.Refresh(Progress);
 
-            ICommand destroyCmd = new DestroyCommand(boardModel, result);
-            commandSystem.EnqueueCommand(destroyCmd);
-            commandSystem.ProcessNextCommand();
-            boardView.SyncVisualsWithData(GetSpriteForType);
+            boardView.ClearTiles(step.destroyed);
+            boardView.PlaceTiles(step.specials, GetSpriteForType);
             yield return new WaitForSeconds(0.2f);
 
-            ICommand gravityCmd = new GravityCommand(gravitySystem);
-            commandSystem.EnqueueCommand(gravityCmd);
-            commandSystem.ProcessNextCommand();
-            boardView.DropTiles(gravitySystem.LastMoves);
+            boardView.DropTiles(step.falls);
+            boardView.DropNewTiles(step.spawns, GetSpriteForType);
 
-            ICommand spawnCmd = new SpawnCommand(spawnSystem);
-            commandSystem.EnqueueCommand(spawnCmd);
-            commandSystem.ProcessNextCommand();
-            boardView.DropNewTiles(spawnSystem.LastSpawned, GetSpriteForType);
-
-            // Waiting for every tile to land before I look for the next cascade
+            // Waiting for every tile to land before I show the next cascade
             yield return new WaitUntil(() => !boardView.IsDropping);
             yield return new WaitForSeconds(0.1f);
         }

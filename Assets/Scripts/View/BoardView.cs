@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using Match3Engine.Core;
+using Match3Engine.Simulation;
 using Match3Engine.Systems;
 
 namespace Match3Engine.View
@@ -85,17 +86,35 @@ namespace Match3Engine.View
             }
         }
 
+        // Destroyed tiles just lose their sprite. Their views stay in the grid to be reused.
+        public void ClearTiles(List<PlacedTile> destroyedTiles)
+        {
+            foreach (PlacedTile destroyed in destroyedTiles)
+            {
+                tileViews[destroyed.position.x, destroyed.position.y].UpdateVisuals(TileType.None, null);
+            }
+        }
+
+        // Showing a tile that appears in place, like a power-up created by a match
+        public void PlaceTiles(List<PlacedTile> placedTiles, System.Func<TileType, Sprite> getSpriteFunc)
+        {
+            foreach (PlacedTile placed in placedTiles)
+            {
+                tileViews[placed.position.x, placed.position.y].UpdateVisuals(placed.type, getSpriteFunc(placed.type));
+            }
+        }
+
         // Newly spawned tiles start stacked above the board and fall into their slots
-        public void DropNewTiles(List<Vector2Int> spawnedSlots, System.Func<TileType, Sprite> getSpriteFunc)
+        public void DropNewTiles(List<PlacedTile> spawnedTiles, System.Func<TileType, Sprite> getSpriteFunc)
         {
             int[] stackedInColumn = new int[dataModel.Width];
 
-            foreach (Vector2Int slot in spawnedSlots)
+            foreach (PlacedTile spawned in spawnedTiles)
             {
+                Vector2Int slot = spawned.position;
                 TileView view = tileViews[slot.x, slot.y];
-                TileType type = dataModel.GetTile(slot.x, slot.y);
 
-                view.UpdateVisuals(type, getSpriteFunc(type));
+                view.UpdateVisuals(spawned.type, getSpriteFunc(spawned.type));
                 view.SnapToPosition(new Vector2(slot.x, dataModel.Height + stackedInColumn[slot.x]));
                 view.DropToPosition(new Vector2(slot.x, slot.y));
 
@@ -103,7 +122,7 @@ namespace Match3Engine.View
             }
         }
 
-        // I'll call this to sync visuals after my command queue finishes processing
+        // Full repaint straight from the data grid. Only correct while nothing is animating.
         public void SyncVisualsWithData(System.Func<TileType, Sprite> getSpriteFunc)
         {
             for (int x = 0; x < dataModel.Width; x++)

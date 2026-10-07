@@ -1,14 +1,14 @@
 # Puzzle Up! — Architecture
 
-A match-3 puzzle prototype built in Unity. The code lives in a single namespace root, `Match3Engine`, and is organised around one idea: **the board state is plain data, and the view only mirrors it**.
+A match-3 puzzle prototype built in Unity. The code lives in a single namespace root, `Match3Engine`, and is organised around one idea: **the game is plain data that resolves instantly, and the view only replays what happened**.
 
 | | |
 |---|---|
 | Unity version | 6000.3.10f1 (Unity 6) |
 | Render pipeline | Built-in, 2D feature set |
 | Input | New Input System package (`com.unity.inputsystem` 1.18.0), polled directly |
-| Assemblies | Everything compiles into `Assembly-CSharp` (no `.asmdef` files) |
-| Code size | 16 scripts, ~920 lines |
+| Assemblies | `Match3Engine` (all game code, `Assets/Scripts`) and `Match3Engine.Tests.EditMode` (`Assets/Tests/EditMode`) |
+| Tests | 7 edit-mode tests that run whole games with no scene |
 | Scene | `Assets/Scenes/SampleScene.unity` (the only scene in the build) |
 
 ## 1. Project layout
@@ -19,12 +19,13 @@ Assets/
 ├── Prefabs/TilePrefab.prefab     One tile: SpriteRenderer + TileView
 ├── Sprites/                      Two sliced sprite sheets (colour tiles, power-ups)
 ├── Scripts/
-│   ├── Core/                     Data model + orchestrator
+│   ├── Match3Engine.asmdef       Assembly for all game code
+│   ├── Core/                     Data model + on-screen controller
 │   │   ├── TileType.cs           Enum of colours and power-ups
 │   │   ├── BoardModel.cs         The grid (pure C#)
 │   │   ├── LevelData.cs          ScriptableObject: board size, colours, move limit, goals
 │   │   ├── LevelProgress.cs      Moves left, goal progress, won/lost (pure C#)
-│   │   └── GameController.cs     MonoBehaviour that wires and drives everything
+│   │   └── GameController.cs     MonoBehaviour that animates one level on screen
 │   ├── Commands/                 Board mutations as ICommand objects
 │   │   ├── ICommand.cs
 │   │   ├── SwapCommand.cs
@@ -35,14 +36,19 @@ Assets/
 │   │   ├── CommandSystem.cs      FIFO command queue
 │   │   ├── MatchSystem.cs        Match detection + power-up creation rules
 │   │   ├── GravitySystem.cs      Column collapse
-│   │   ├── SpawnSystem.cs        Random refill
+│   │   ├── SpawnSystem.cs        Seeded random refill and match-free starting fill
+│   │   ├── MoveFinder.cs         Which swaps are valid
 │   │   ├── PowerUpSystem.cs      Explosion area calculation
 │   │   └── InputSystem.cs        MonoBehaviour: swipe → swap request
+│   ├── Simulation/               A whole game with no visuals (pure C#)
+│   │   ├── GameSimulation.cs     Resolves a full move instantly; owns board, progress, systems
+│   │   └── TurnResult.cs         What a move did, as steps the view can replay
 │   ├── View/                     Presentation
 │   │   ├── BoardView.cs          Grid of TileViews, camera fitting
 │   │   ├── TileView.cs           One sprite, lerps to a target position
 │   │   └── LevelHud.cs           Moves, goals and result text (uGUI + TextMesh Pro)
 │   └── AI/                       Empty (placeholder)
+├── Tests/EditMode/               GameSimulationTests + test assembly definition
 ├── Levels/Level_01.asset         The level the scene loads
 ├── TextMesh Pro/                 TMP essential resources (imported package content)
 ├── InputSystem_Actions.inputactions   Unity default asset; not used by game code
@@ -54,48 +60,38 @@ Assets/
 ```mermaid
 flowchart TD
     Input["InputSystem<br/>(MonoBehaviour)"] -->|ProcessPlayerSwap(a, b)| GC
+    Bots["Bots, tests<br/>(no scene needed)"] -->|PlayMove(a, b)| SIM
 
-    subgraph Core
-        GC["GameController<br/>(MonoBehaviour, orchestrator)"]
-        BM["BoardModel<br/>TileType[,] grid"]
-    end
+    GC["GameController<br/>(MonoBehaviour)"] -->|PlayMove(a, b)| SIM
+    SIM -->|TurnResult| GC
+    GC -->|replay steps| BV
 
-    subgraph Systems
-        CS[CommandSystem]
-        MS[MatchSystem]
-        GS[GravitySystem]
-        SS[SpawnSystem]
-        PS[PowerUpSystem]
-    end
-
-    subgraph Commands
-        CMD["Swap / Destroy / Gravity / Spawn<br/>(ICommand)"]
+    subgraph Simulation [Simulation — pure C#]
+        SIM[GameSimulation]
+        SIM --> CS[CommandSystem] --> CMD["Swap / Destroy / Gravity / Spawn<br/>(ICommand)"]
+        SIM -->|query| MF[MoveFinder]
+        SIM -->|query| MS[MatchSystem]
+        SIM -->|query| PS[PowerUpSystem]
+        CMD --> GS[GravitySystem]
+        CMD --> SS[SpawnSystem]
+        CMD -->|write| BM["BoardModel"]
+        SIM --> LP[LevelProgress]
     end
 
     subgraph View
         BV[BoardView] --> TV["TileView × (W×H)"]
+        HUD[LevelHud]
     end
 
-    GC -->|enqueue + process| CS --> CMD
-    CMD -->|write| BM
-    GC -->|query| MS
-    GC -->|query| PS
-    MS -->|read| BM
-    PS -->|read| BM
-    GS -->|write| BM
-    SS -->|write| BM
-    CMD --> GS
-    CMD --> SS
-    GC -->|SyncVisualsWithData / SwapVisuals| BV
-    BV -->|read| BM
+    GC --> HUD
 ```
 
 Dependency rules that the code currently follows:
 
-- **`BoardModel` depends on nothing** but `TileType`. It has no Unity types and no knowledge of views or systems.
-- **Systems and commands are plain C# classes** that receive the `BoardModel` through their constructor. Only `InputSystem` is a `MonoBehaviour`.
-- **The view never writes to the model.** `BoardView` reads the model and repaints; all mutations go through commands.
-- **`GameController` is the only class that knows about every layer.** It is the composition root (creates the model and systems in `Start`) and the turn sequencer (coroutines).
+- **`GameSimulation` is the game.** It owns the board, the progress, the systems and the random generator, and never touches a `MonoBehaviour`, a scene or a frame. Anything that can call `PlayMove` can play: the on-screen controller, a test, or a bot.
+- **A move resolves completely before anything is drawn.** `PlayMove` returns a `TurnResult` describing what happened; the board is already in its final state.
+- **The view replays, it does not decide.** `BoardView` is told which tiles were destroyed, which fell and which spawned. It only reads the model directly for a full repaint (start of level, after a shuffle).
+- **One seed, one game.** All randomness comes from a single `System.Random` created from the seed, so the same level, seed and moves always give the same result.
 
 ## 3. Core
 
@@ -122,44 +118,64 @@ Plain C# state for one attempt: `MovesLeft`, the remaining count per goal colour
 - `Evaluate()` — called once the board has settled after a move: `Won` if every goal is complete, otherwise `Lost` if no moves remain. A goal completed on the last move is a win.
 
 ### `GameController`
-Inspector-configured: the `LevelData` to play, a `BoardView` and `LevelHud` reference, and a `TileType → Sprite` table (`TileSpriteMapping[]`). Board size and spawnable colours come from the level.
+Inspector-configured: the `LevelData` to play, a `seed` (0 means a new one every run), a `BoardView` and `LevelHud` reference, and a `TileType → Sprite` table (`TileSpriteMapping[]`).
 
-`Start()` builds the model, a `LevelProgress` and the five systems, asks the view to instantiate the tile grid and fit the camera, fills the board with `SpawnSystem.SpawnTiles()` and does a first visual sync.
+`Start()` creates a `GameSimulation` for the level, asks the view to instantiate the tile grid and fit the camera, and paints the starting board.
+
+It keeps its own `LevelProgress` for what is **shown on screen**. The simulation's progress is always a full turn ahead of the animation, so the controller advances its copy step by step as each cascade is displayed. Both end every turn with the same values.
 
 ## 4. Turn flow
 
-`InputSystem` calls `GameController.ProcessPlayerSwap(posA, posB)`, which starts `SwapAndProcessRoutine`:
+### In the simulation (instant)
+
+`GameSimulation.PlayMove(posA, posB)`:
 
 ```mermaid
 flowchart TD
-    A[Swipe detected] --> B["SwapVisuals + SwapCommand<br/>wait 0.25 s"]
-    B --> C{Either tile a power-up?}
-    C -- yes --> D["PowerUpSystem.GetExplosionArea<br/>→ DestroyAndRefillRoutine"]
-    D --> L
-    C -- no --> F["MatchSystem.FindMatches(posA, posB)"]
-    F --> G{Any match?}
-    G -- no --> H["Swap back<br/>(visuals + SwapCommand)"]
-    G -- yes --> L
+    A["PlayMove(a, b)"] --> B{"MoveFinder.IsValidMove?"}
+    B -- no --> X["return TurnResult { valid = false }<br/>nothing changed"]
+    B -- yes --> C["spend a move, SwapCommand"]
+    C --> D{Either tile a power-up?}
+    D -- yes --> E[PowerUpSystem.GetExplosionArea]
+    D -- no --> F["MatchSystem.FindMatches(a, b)"]
+    E --> L
+    F --> L
 
-    subgraph L [RunGameplayPipelineRoutine — cascade loop]
+    subgraph L [Cascade loop]
         direction TB
-        M[FindMatches] --> N{Matches?}
-        N -- yes --> O["DestroyAndRefillRoutine:<br/>DestroyCommand → sync, 0.2 s<br/>GravityCommand + SpawnCommand → tiles fall<br/>wait until all have landed"]
-        O --> M
-        N -- no --> P[Turn ends]
+        M["ResolveStep: record + count destroyed tiles<br/>DestroyCommand → GravityCommand → SpawnCommand<br/>add a CascadeStep to the result"] --> N[FindMatches]
+        N -- matches --> M
     end
+
+    L -- no matches --> G[LevelProgress.Evaluate]
+    G --> H{Still playing and no valid move?}
+    H -- yes --> I[Shuffle, mark result.shuffled]
+    H -- no --> R[return TurnResult]
+    I --> R
 ```
 
-`DestroyAndRefillRoutine` is shared by the match and power-up paths. After clearing, it runs gravity and spawn back to back on the model and hands their results (`GravitySystem.LastMoves`, `SpawnSystem.LastSpawned`) to the view, so surviving tiles and new tiles fall at the same time. It then waits on `BoardView.IsDropping` rather than a fixed delay.
+The swap positions are only passed to `FindMatches` on the first pass; later passes use `(-1, -1)` so that power-ups created by chain reactions are placed by shape rather than by player touch.
+
+A `TurnResult` holds `valid`, `shuffled`, and one `CascadeStep` per cascade. Each step lists `destroyed` (position and the type it had), `specials` (power-ups created), `falls` (`TileMove { from, to }`) and `spawns` (position and type).
+
+**Starting board.** `SpawnSystem.FillWithoutMatches` never places a third tile in a row, and the fill is repeated until `MoveFinder` finds at least one move.
+
+**Shuffle.** When a turn ends with no valid move, the tiles on the board are randomly rearranged until there are no matches and at least one move. If 50 attempts fail, a fresh board is dealt.
+
+### On screen (animated)
+
+`InputSystem` calls `GameController.ProcessPlayerSwap(posA, posB)`, which starts `PlayTurnRoutine`:
+
+1. Call `simulation.PlayMove` — the turn is now decided.
+2. Animate the swap (0.25 s). If the result is not valid, animate it back and stop; no move is spent.
+3. For each `CascadeStep`: count the destroyed tiles on the HUD, clear them and show any new power-ups (0.2 s), then drop survivors and new tiles together and wait on `BoardView.IsDropping`.
+4. If the board was shuffled, repaint it from the model.
+5. Evaluate the on-screen progress and show the result if the level ended.
 
 `GameController` holds an `isBusy` flag for the whole turn: `ProcessPlayerSwap` ignores swipes while it is set, rejects swaps where either cell is off the board, and accepts nothing once the level is won or lost.
 
-Level tracking hooks into the same flow: a valid swap spends a move, `DestroyAndRefillRoutine` counts each tile toward the goals just before destroying it, and the turn ends with `LevelProgress.Evaluate()`. After each of these the controller pushes the progress to `LevelHud.Refresh`.
-
-The cascade loop runs until a full pass finds no matches. The swap positions are only passed on the **first** pass; later passes use `(-1, -1)` so that power-ups created by chain reactions are placed by shape rather than by player touch.
-
 ### Command pattern
-Every board mutation is an `ICommand` with a single `Execute()` method. `CommandSystem` holds a `Queue<ICommand>`; `GameController` always enqueues one command and immediately calls `ProcessNextCommand()`, so the queue is never more than one deep. The pattern is in place as a seam (for replay, undo, or deferred execution) rather than being exploited today — `ICommand` has no `Undo`, and an invalid swap is reverted by issuing a second `SwapCommand`.
+Every board mutation is an `ICommand` with a single `Execute()` method. `CommandSystem` holds a `Queue<ICommand>`; `GameSimulation` always enqueues one command and immediately processes it, so the queue is never more than one deep. The pattern is in place as a seam (for replay, undo, or deferred execution) rather than being exploited today — `ICommand` has no `Undo`. The starting fill and the shuffle write to the board directly, not through commands.
 
 | Command | Effect on the model |
 |---|---|
@@ -211,7 +227,10 @@ Power-ups are activated **only by swapping them**. `GameController` unions the a
 For each column, bottom to top: for every empty cell, pull down the nearest non-empty tile above it. Operates in place on the model and records each fall as a `TileMove { from, to }` in `LastMoves`, in the order it happened.
 
 ### `SpawnSystem`
-Fills every remaining `None` cell with a uniformly random entry from `availableTileTypes` (uses `UnityEngine.Random`, unseeded) and records the filled cells in `LastSpawned`, column by column from bottom to top.
+Fills every remaining `None` cell with a uniformly random entry from `availableTileTypes` using the simulation's seeded `System.Random`, and records the filled cells in `LastSpawned`, column by column from bottom to top. `FillWithoutMatches` deals a whole board, skipping any colour that would complete a line of three.
+
+### `MoveFinder`
+The single definition of a legal swap, used by the simulation and available to bots. `IsValidMove(a, b)` requires two neighbouring cells on the board and either a power-up among them, or that the swap puts one of the two tiles into a line of three (checked with `MatchSystem.HasMatchAt`, on the model, then undone). `FindValidMoves()` lists every legal swap once; `HasValidMove()` stops at the first.
 
 ### `InputSystem`
 Polls `Mouse.current` and `Touchscreen.current` each frame. Press and release positions are converted to world space; if the drag is longer than `0.5` units, the start position is rounded to a grid cell and the dominant axis of the drag picks the neighbour. Result: `gameController.ProcessPlayerSwap(posA, posB)`.
@@ -222,9 +241,10 @@ Note the class shares its name with the `UnityEngine.InputSystem` namespace; it 
 
 ### `BoardView`
 - `InitializeBoard(model)` — instantiates one `TilePrefab` per cell under the `Board` transform and stores them in a `TileView[,]` that mirrors the model. Also creates a `SpriteMask` the size of the board at runtime and sets every tile to `VisibleInsideMask`, so tiles waiting above the board are hidden until they fall into it.
-- `SyncVisualsWithData(getSprite)` — full repaint: every `TileView` gets the sprite for the model's type at its slot. Called for the initial fill and after each destroy step.
+- `SyncVisualsWithData(getSprite)` — full repaint from the model. Called for the starting board and after a shuffle.
+- `ClearTiles(destroyed)` / `PlaceTiles(specials, getSprite)` — remove the sprites of destroyed tiles and show power-ups created in place.
 - `DropTiles(moves)` — replays the gravity pass: for each `TileMove`, the falling view and the empty (sprite-less) view below it exchange slots in the array, and the falling view drops to its new cell.
-- `DropNewTiles(spawned, getSprite)` — reuses the empty views left at the top of each column: gives each its new sprite, stacks it above the board (`y = Height + n`), and drops it into its cell.
+- `DropNewTiles(spawns, getSprite)` — reuses the empty views left at the top of each column: gives each the sprite for its spawned type, stacks it above the board (`y = Height + n`), and drops it into its cell.
 - `IsDropping` — true while any tile is still falling.
 - `SwapVisuals(a, b)` — exchanges two `TileView` references and retargets them, which is what produces the swap animation.
 - `CenterAndScaleCamera(w, h)` — centres the orthographic camera on the board and sizes it to fit with 2 units of padding, whichever of width or height is tighter.
@@ -263,19 +283,17 @@ Sits on the `HudCanvas`. `Refresh(progress)` writes the moves left and each goal
 
 Behaviours visible in the current code that are worth knowing before extending it:
 
-1. **The starting board can contain matches.** Initial fill is purely random. Since `FindMatches` scans the entire board, a pre-existing match makes *any* first swap count as valid.
-2. **Swap validity is board-wide.** For the same reason, a swap is accepted if a match exists anywhere, not only if the swapped tiles took part in one.
-3. **Power-ups do not chain.** A power-up caught in another explosion is simply removed without firing.
-4. **ColorBomb + power-up** destroys only tiles of that power-up's type, since the swapped tile's type is used as the target "colour".
-5. **No deadlock detection or shuffle** when no moves remain.
-6. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is no restart or next level (stop and press Play again), no score, audio or persistence. `Assets/Scripts/AI` is empty.
-7. **No tests**, although the Test Framework package is installed. The pure-C# model and systems are testable as they stand, apart from `SpawnSystem`'s use of `UnityEngine.Random`.
+1. **Power-ups do not chain.** A power-up caught in another explosion is simply removed without firing.
+2. **ColorBomb + power-up** destroys only tiles of that power-up's type, since the swapped tile's type is used as the target "colour".
+3. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is no restart or next level (stop and press Play again), no score, audio or persistence. `Assets/Scripts/AI` is empty.
+4. **A shuffle is not animated.** The board is simply repainted in its new arrangement.
 
 ## 9. Extension points
 
 - **New tile colour** — add it inside the `Red..Pink` range of `TileType`, then add it to `availableTileTypes` and `tileSprites` in the Inspector.
 - **New power-up** — add the enum value after the colours, extend `PowerUpSystem.IsPowerUp` / `GetExplosionArea`, add a creation rule in `MatchSystem`, and map a sprite.
-- **New board action** — implement `ICommand` and run it from `GameController` through `CommandSystem`.
+- **New board action** — implement `ICommand`, run it from `GameSimulation`, and report its effect in `CascadeStep` so the view can show it.
+- **A bot** — construct a `GameSimulation(level, seed)`, pick from `GetValidMoves()`, call `PlayMove`, and repeat until `Progress.State` is no longer `Playing`. No scene is needed.
 - **New level** — create a `LevelData` asset and assign it to `GameController.level`.
 - **New goal type** — `LevelGoal` only knows "collect a colour"; other goals need a new field there and a rule in `LevelProgress`.
 

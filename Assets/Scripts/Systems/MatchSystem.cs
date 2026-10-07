@@ -25,6 +25,23 @@ namespace Match3Engine.Systems
             return type >= TileType.Red && type <= TileType.Pink;
         }
 
+        // Quick local check: is this tile part of a line of 3 or more?
+        public bool HasMatchAt(Vector2Int pos)
+        {
+            TileType type = board.GetTile(pos.x, pos.y);
+            if (!IsBaseColor(type)) return false;
+
+            int horizontal = 1;
+            for (int x = pos.x - 1; board.GetTile(x, pos.y) == type; x--) horizontal++;
+            for (int x = pos.x + 1; board.GetTile(x, pos.y) == type; x++) horizontal++;
+            if (horizontal >= 3) return true;
+
+            int vertical = 1;
+            for (int y = pos.y - 1; board.GetTile(pos.x, y) == type; y--) vertical++;
+            for (int y = pos.y + 1; board.GetTile(pos.x, y) == type; y++) vertical++;
+            return vertical >= 3;
+        }
+
         public MatchResult FindMatches(Vector2Int swapPosA, Vector2Int swapPosB)
         {
             MatchResult result = new MatchResult();

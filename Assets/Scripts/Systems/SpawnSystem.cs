@@ -9,14 +9,20 @@ namespace Match3Engine.Systems
         private BoardModel board;
         private TileType[] availableTypes;
 
+        // A seeded generator, so the same seed always produces the same tiles
+        private System.Random random;
+
         // The slots I filled in my last spawn pass, column by column from bottom to top
         public List<Vector2Int> LastSpawned { get; private set; } = new List<Vector2Int>();
 
-        public SpawnSystem(BoardModel boardModel, TileType[] types)
+        private List<TileType> candidates = new List<TileType>();
+
+        public SpawnSystem(BoardModel boardModel, TileType[] types, System.Random seededRandom)
         {
             // Hooking up my board and the tile types allowed in this level
             board = boardModel;
             availableTypes = types;
+            random = seededRandom;
         }
 
         public void SpawnTiles()
@@ -31,10 +37,38 @@ namespace Match3Engine.Systems
                     if (board.GetTile(x, y) == TileType.None)
                     {
                         // Picking a random tile type from my available list
-                        TileType randomType = availableTypes[Random.Range(0, availableTypes.Length)];
+                        TileType randomType = availableTypes[random.Next(availableTypes.Length)];
                         board.SetTile(x, y, randomType);
                         LastSpawned.Add(new Vector2Int(x, y));
                     }
+                }
+            }
+        }
+
+        // Replaces the whole board with random tiles, never placing a third tile in a row.
+        // Used for the starting board so the level does not begin with free matches.
+        public void FillWithoutMatches()
+        {
+            for (int x = 0; x < board.Width; x++)
+            {
+                for (int y = 0; y < board.Height; y++)
+                {
+                    candidates.Clear();
+
+                    foreach (TileType type in availableTypes)
+                    {
+                        bool completesRow = board.GetTile(x - 1, y) == type && board.GetTile(x - 2, y) == type;
+                        bool completesColumn = board.GetTile(x, y - 1) == type && board.GetTile(x, y - 2) == type;
+
+                        if (!completesRow && !completesColumn) candidates.Add(type);
+                    }
+
+                    // With only one or two colours there may be no safe choice, so I take any
+                    TileType chosen = candidates.Count > 0
+                        ? candidates[random.Next(candidates.Count)]
+                        : availableTypes[random.Next(availableTypes.Length)];
+
+                    board.SetTile(x, y, chosen);
                 }
             }
         }
