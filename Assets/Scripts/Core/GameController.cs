@@ -53,6 +53,18 @@ namespace Match3Engine.Core
                 return;
             }
 
+            StartLevel(level);
+        }
+
+        // Puts a level on screen, replacing whatever was being played. The board is rebuilt,
+        // so the new level may be a different size.
+        public void StartLevel(LevelData newLevel)
+        {
+            // Anything still animating belongs to the old level
+            StopAllCoroutines();
+            isBusy = false;
+
+            level = newLevel;
             BeginAttempt();
 
             boardView.InitializeBoard(simulation.Board);
@@ -90,7 +102,7 @@ namespace Match3Engine.Core
         }
 
         // Helper method to find the right image for my tile types
-        private Sprite GetSpriteForType(TileType type)
+        public Sprite GetSpriteForType(TileType type)
         {
             foreach (var mapping in tileSprites)
             {

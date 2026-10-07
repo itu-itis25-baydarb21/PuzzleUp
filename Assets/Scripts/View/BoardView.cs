@@ -16,9 +16,17 @@ namespace Match3Engine.View
         // This is my visual grid mirroring the data grid structure
         private TileView[,] tileViews;
         private BoardModel dataModel;
+        private GameObject boardMask;
 
         public void InitializeBoard(BoardModel model)
         {
+            // Clearing out the tiles and mask of the level that was shown before, if any
+            if (tileViews != null)
+            {
+                foreach (TileView oldView in tileViews) Destroy(oldView.gameObject);
+            }
+            if (boardMask != null) Destroy(boardMask);
+
             dataModel = model;
             tileViews = new TileView[model.Width, model.Height];
 
@@ -60,6 +68,8 @@ namespace Match3Engine.View
             maskObject.transform.position = new Vector3((width - 1) / 2f, (height - 1) / 2f, 0f);
             maskObject.transform.localScale = new Vector3(width, height, 1f);
             maskObject.AddComponent<SpriteMask>().sprite = maskSprite;
+
+            boardMask = maskObject;
         }
 
         // True while any tile is still falling

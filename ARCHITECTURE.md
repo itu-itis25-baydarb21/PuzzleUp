@@ -1,6 +1,6 @@
 # Puzzle Up! — Architecture
 
-A match-3 puzzle prototype built in Unity. The code lives in a single namespace root, `Match3Engine`, and is organised around one idea: **the game is plain data that resolves instantly, and the view only replays what happened**.
+A match-3 studio game built in Unity: the player designs a level, simulated players attempt it, and the level is judged by what it earns and how many players it loses. The code lives in a single namespace root, `Match3Engine`, and is organised around one idea: **the game is plain data that resolves instantly, and the view only replays what happened**.
 
 | | |
 |---|---|
@@ -8,7 +8,7 @@ A match-3 puzzle prototype built in Unity. The code lives in a single namespace 
 | Render pipeline | Built-in, 2D feature set |
 | Input | A bot plays the board. UI buttons use the new Input System (`com.unity.inputsystem` 1.18.0) through `InputSystemUIInputModule` |
 | Assemblies | `Match3Engine` (all game code, `Assets/Scripts`), `Match3Engine.Editor` (`Assets/Editor`) and `Match3Engine.Tests.EditMode` (`Assets/Tests/EditMode`) |
-| Tests | 31 edit-mode tests that run whole games with no scene |
+| Tests | 37 edit-mode tests that run whole games with no scene |
 | Scene | `Assets/Scenes/SampleScene.unity` (the only scene in the build) |
 
 ## 1. Project layout
@@ -46,7 +46,11 @@ Assets/
 │   │   └── MovePreview.cs        What a swap would destroy straight away
 │   ├── Players/                  Simulated players: who they are, when they pay, when they quit (pure C#)
 │   │   ├── PlayerModelSettings.cs  ScriptableObject with every tunable number; PlayerProfile, SpenderType
-│   │   └── LevelAnalyzer.cs      Runs a population through a level; LevelReport, PlayerPopulation
+│   │   ├── LevelAnalyzer.cs      Runs a population through a level; LevelReport, PlayerPopulation
+│   │   └── LevelVerdict.cs       One-line rating of a report
+│   ├── Designer/                 The in-game level editor (uGUI)
+│   │   ├── LevelDesigner.cs      The designer screen: edit, test, watch
+│   │   └── Stepper.cs            A number with minus and plus buttons
 │   ├── View/                     Presentation
 │   │   ├── BoardView.cs          Grid of TileViews, camera fitting
 │   │   ├── TileView.cs           One sprite, lerps to a target position
@@ -57,7 +61,7 @@ Assets/
 │       ├── BatchRunner.cs        Plays a level many times and collects the results
 │       └── BotPlayer.cs          MonoBehaviour: a bot playing the level on screen
 ├── Editor/                       Menu commands: Puzzle Up > Run Bot Batch, Run Player Model
-├── Tests/EditMode/               GameSimulationTests, BotTests, ObstacleTests, PlayerModelTests + test assembly definition
+├── Tests/EditMode/               GameSimulationTests, BotTests, ObstacleTests, PlayerModelTests, LevelVerdictTests + test assembly definition
 ├── Levels/                       Level_01 (plain board), Level_02 (crates and holes; the one the scene loads), Examples/ (easy, medium, hard)
 ├── Settings/PlayerModel.asset    The player model's numbers
 ├── TextMesh Pro/                 TMP essential resources (imported package content)
@@ -69,6 +73,9 @@ Assets/
 
 ```mermaid
 flowchart TD
+    LD["LevelDesigner<br/>(MonoBehaviour)"] -->|StartLevel(level)| GC
+    LD -->|"SimulatePlayer × population"| PM["LevelAnalyzer<br/>(player model)"]
+    PM -->|play attempts| SIM
     BP["BotPlayer<br/>(MonoBehaviour)"] -->|ProcessPlayerSwap(a, b)| GC
     BP -->|read board, choose move| SIM
     Bots["Batch runs, tests<br/>(no scene needed)"] -->|PlayMove(a, b)| SIM
@@ -146,7 +153,7 @@ Plain C# state for one attempt: `MovesLeft`, the remaining count per goal colour
 ### `GameController`
 Inspector-configured: the `LevelData` to play, a `seed` (0 means a new one every run), a `BoardView` and `LevelHud` reference, and a `TileType → Sprite` table (`TileSpriteMapping[]`).
 
-`Start()` creates a `GameSimulation` for the level, asks the view to instantiate the tile grid and fit the camera, and paints the starting board.
+`StartLevel(level)` puts a level on screen: it stops any animation still running, creates a `GameSimulation`, has the view rebuild the tile grid (the new level may be a different size), fits the camera and paints the starting board. `Start()` calls it with the Inspector's level; the designer calls it with the level being edited.
 
 `RestartLevel()` deals a new attempt of the same level onto the existing tile views (a new board with seed 0, the same board with a fixed seed). `ShowSimulationState()` jumps the screen straight to wherever the simulation is, with no animation; it is used at the start and after a game was finished off-screen. Both are ignored while a move is animating. `Simulation`, `IsBusy` and `CurrentSeed` are exposed for whoever is playing.
 
@@ -348,7 +355,42 @@ Every number above is a field on `PlayerModelSettings`, a `ScriptableObject`. Th
 
 This is the shape the game is built on: the easy level earns nothing, the hard one loses almost everyone, and the one in between makes the money at the cost of some players.
 
-## 8. View
+## 8. Level designer
+
+The screen the game opens on, and the place the core loop happens: **edit the level → test it on the simulated players → read the result → adjust → watch a bot play it**. It is uGUI on its own canvas, drawn over the board.
+
+### `LevelDesigner`
+Holds the level being edited as a `LevelData` created in memory. On start it loads the last design from `designer_level.json` in `Application.persistentDataPath`, or copies the level assigned to `GameController` if there is none. Every edit is saved back to that file straight away.
+
+| Control | What it sets | Range |
+|---|---|---|
+| Board grid | Tap a slot to cycle it: tile → crate → hole → tile | — |
+| Width, Height | Board size. Obstacles that fall outside a smaller board are dropped. | 5–10 |
+| Colours | How many of Red, Blue, Green, Yellow, Pink are in play, in that order | 3–5 |
+| Moves | Move limit | 5–50 |
+| Goals | One stepper each for the five colours (steps of 5) and for crates (steps of 1) | 0–95; crates up to the number placed |
+
+A goal's stepper is locked at 0 when the level cannot supply it: a colour that is switched off, or crates when none are placed. `ReadLevelFromControls` is the single place where the controls are copied into the level and these limits are applied.
+
+**Test level** runs the player model on the level: the population from `PlayerModelSettings`, a few players per frame in a coroutine so the screen stays responsive, with a progress percentage. It then shows first-try pass rate, attempts to pass, revenue per 100 players and players lost, under a one-line verdict. Any edit cancels a running test and clears the old numbers, since they describe a level that no longer exists.
+
+**Watch** hands the level to `GameController.StartLevel`, configures `BotPlayer` with the model's strategy and the chosen player — the **Player** button cycles Weak (skill 0.25), Average (0.5), Strong (0.8) — and hides the designer. **Edit** on the play screen brings it back. The bot is disabled whenever the designer is showing.
+
+### `LevelVerdict`
+Turns a `LevelReport` into one of five ratings, checked in this order:
+
+| Rating | When |
+|---|---|
+| Too hard | 40% or more of players quit |
+| Too easy | Revenue under 1 per 100 players and at least 80% pass first try |
+| Costly | 20% or more quit |
+| Sweet spot | Revenue of 3 or more per 100 players |
+| Flat | Anything else |
+
+### `Stepper`
+A reusable minus / value / plus control with `min`, `max` and `step`. `Changed` fires only for button presses; `SetValue` and `SetRange` from code are silent. A button that would do nothing is greyed out.
+
+## 9. View
 
 ### `BoardView`
 - `InitializeBoard(model)` — instantiates one `TilePrefab` per cell under the `Board` transform and stores them in a `TileView[,]` that mirrors the model. Also creates a `SpriteMask` the size of the board at runtime and sets every tile to `VisibleInsideMask`, so tiles waiting above the board are hidden until they fall into it.
@@ -374,9 +416,9 @@ Sits on the `HudCanvas`. `Refresh(progress)` writes the moves left and each goal
 ### `WatchControls`
 Sits on the `HudCanvas` and wires the buttons to `BotPlayer`: three speed buttons (1×, 2×, 4×, the active one tinted), Skip, and Play Again on the result panel. It also shows which bot is playing.
 
-## 9. Scene wiring
+## 10. Scene wiring
 
-`SampleScene` has five root objects:
+`SampleScene` has six root objects:
 
 | GameObject | Components | Notes |
 |---|---|---|
@@ -384,9 +426,10 @@ Sits on the `HudCanvas` and wires the buttons to `BotPlayer`: three speed button
 | `GameManager` | `GameController`, `BoardView`, `BotPlayer`, `InputSystem` (disabled) | All references are wired in the Inspector. `BotPlayer` is set to GoalAware at skill 0.5 |
 | `EventSystem` | EventSystem, `InputSystemUIInputModule` | Needed for the UI buttons |
 | `Board` | Transform only | Parent for instantiated tiles |
-| `HudCanvas` | Canvas, CanvasScaler, GraphicRaycaster, `LevelHud`, `WatchControls` | Screen Space Overlay, scales with screen size (1080×1920 reference). Children: `MovesText`, `GoalsText`, `WatchBar` (speed and skip buttons), `BotLabel`, `ResultPanel` → `ResultText`, `AgainButton` |
+| `HudCanvas` | Canvas, CanvasScaler, GraphicRaycaster, `LevelHud`, `WatchControls` | Screen Space Overlay, scales with screen size (1080×1920 reference). Children: `MovesText`, `GoalsText`, `WatchBar` (speed, skip and edit buttons), `BotLabel`, `ResultPanel` → `ResultText`, `AgainButton` |
+| `DesignerCanvas` | Canvas (sorting order 10), CanvasScaler, GraphicRaycaster, `LevelDesigner` | Child `Screen` is the opaque designer panel: a vertical layout of the board grid, the size, rules and goal steppers, the Test / Player / Watch buttons and the results |
 
-`GameController` points at `Assets/Levels/Level_02.asset`:
+`GameController` points at `Assets/Levels/Level_02.asset`. This is what the designer starts from the first time; after that it loads the saved design.
 
 - Board is **8 × 8**, 25 moves, five colours (Red, Green, Blue, Yellow, Pink). `Purple` exists in the enum but is not spawned and has no sprite.
 - Obstacles: a hole in each corner, and eight crates in a 4 × 2 block near the bottom.
@@ -396,26 +439,29 @@ Sits on the `HudCanvas` and wires the buttons to `BotPlayer`: three speed button
 
 `tileSprites` on `GameController` has ten mappings — the five colours, the four power-ups and the crate. A hole has no sprite; it shows as a gap.
 
-## 10. Known limitations
+## 11. Known limitations
 
 Behaviours visible in the current code that are worth knowing before extending it:
 
 1. **Power-ups do not chain.** A power-up caught in another explosion is simply removed without firing.
 2. **ColorBomb + power-up** destroys only tiles of that power-up's type, since the swapped tile's type is used as the target "colour".
-3. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is no next level, no score, audio or persistence.
+3. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is one level at a time: no level list, no score, no audio. The design being edited is the only thing saved.
 4. **A shuffle is not animated.** The board is simply repainted in its new arrangement.
-5. **Batch results only appear in the Console.** Nothing in the game itself starts a batch or shows its numbers yet. The on-screen bot's strategy and skill can only be changed in the Inspector.
+5. **The bot comparison only appears in the Console.** The designer shows the player model's numbers, but the per-strategy bot table is still an editor menu.
 6. **The look-ahead bot is slow** compared with the others — about 14 seconds per 1,000 games on `Level_01`, against 1 to 3 seconds.
 7. **Crates fall; there is no fixed blocker.** An obstacle that stays put and stops tiles falling would need tiles to slide in diagonally underneath it, which gravity does not do.
-8. **Obstacles are placed by typing coordinates** into the level asset's `obstacles` list. There is no grid to paint them on.
-9. **The crate sprite is a generated placeholder**, and the board has no background, so a hole is only visible as a missing tile.
-10. **A human cannot play.** The swipe `InputSystem` component is disabled in the scene. Enabling it works, but it would compete with the bot for the same board.
-11. **Speed is global.** It uses `Time.timeScale`, so anything else that runs on game time speeds up with it.
-12. **The player model looks at one level at a time.** Every player arrives fresh, with no frustration carried over from earlier levels, and the population is the same for every level.
-13. **Extra moves exist only in the headless model.** Nothing on screen offers or shows a purchase.
-14. **The model's numbers are first guesses.** They produce the intended shape but have not been tuned against anything.
+8. **The crate sprite is a generated placeholder**, and the board has no background, so a hole is only visible as a missing tile.
+9. **A human cannot play.** The swipe `InputSystem` component is disabled in the scene. Enabling it works, but it would compete with the bot for the same board.
+10. **Speed is global.** It uses `Time.timeScale`, so anything else that runs on game time speeds up with it.
+11. **The player model looks at one level at a time.** Every player arrives fresh, with no frustration carried over from earlier levels, and the population is the same for every level.
+12. **Extra moves exist only in the headless model.** Nothing on screen offers or shows a purchase.
+13. **The model's numbers are first guesses.** They produce the intended shape but have not been tuned against anything.
+14. **The designer is laid out for a portrait screen.** It is a single 1080 × 1920 column; a wide Game view squeezes it.
+15. **The verdict thresholds are first guesses**, like the rest of the player model's numbers.
+16. **The designer has no automated tests.** Its rating rules do; the screen itself was checked by driving it in the editor.
 
-## 11. Extension points
+
+## 12. Extension points
 
 - **New tile colour** — add it inside the `Red..Pink` range of `TileType`, then add it to `availableTileTypes` and `tileSprites` in the Inspector.
 - **New power-up** — add the enum value after the colours, extend `PowerUpSystem.IsPowerUp` / `GetExplosionArea`, add a creation rule in `MatchSystem`, and map a sprite.
@@ -425,6 +471,6 @@ Behaviours visible in the current code that are worth knowing before extending i
 - **New obstacle** — add it at the end of `TileType`, then decide each row of the obstacle table in section 3 and put the rule in the matching system. Map a sprite on `GameController`.
 - **New goal type** — `LevelGoal` only knows "collect a colour"; other goals need a new field there and a rule in `LevelProgress`.
 
-## 12. Version control
+## 13. Version control
 
 The project root is a git repository on branch `main`, with `origin` at `github.com/itu-itis25-baydarb21/PuzzleUp`. `Assets/`, `Packages/` and `ProjectSettings/` are tracked; `Library/`, `Temp/`, `Logs/`, `UserSettings/` and generated solution/project files are excluded by the standard Unity `.gitignore`.

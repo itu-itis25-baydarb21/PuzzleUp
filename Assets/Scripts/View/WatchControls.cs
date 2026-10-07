@@ -36,6 +36,12 @@ namespace Match3Engine.View
 
         private void Start()
         {
+            Refresh();
+        }
+
+        // Call after the bot or its speed was changed from somewhere else
+        public void Refresh()
+        {
             botLabel.text = "Bot: " + botPlayer.strategy + ", skill " + botPlayer.skill.ToString("0.00", CultureInfo.InvariantCulture);
             HighlightSpeed(botPlayer.Speed);
         }

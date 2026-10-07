@@ -109,6 +109,21 @@ namespace Match3Engine.AI
             gameController.RestartLevel();
         }
 
+        // Changes who is playing. Takes effect from the next move.
+        public void Configure(BotStrategy newStrategy, float newSkill)
+        {
+            strategy = newStrategy;
+            skill = newSkill;
+            bot = null;
+            skipRequested = false;
+            waited = 0f;
+        }
+
+        private void OnEnable()
+        {
+            Time.timeScale = Speed;
+        }
+
         private void OnDisable()
         {
             // Speed is a global setting, so I put it back when I stop playing
