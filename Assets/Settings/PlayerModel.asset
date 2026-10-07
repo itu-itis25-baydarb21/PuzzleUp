@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9894b47e5a4e72f419d6e7f0616afeb4, type: 3}
+  m_Name: PlayerModel
+  m_EditorClassIdentifier: Match3Engine::Match3Engine.Players.PlayerModelSettings
+  populationSize: 300
+  skillAverage: 0.5
+  skillSpread: 0.2
+  patienceMin: 2
+  patienceMax: 5
+  shareSometimes: 0.25
+  shareOften: 0.1
+  strategy: 2
+  maxAttempts: 30
+  nearMissProgress: 0.85
+  extraMoves: 5
+  extraMovesPrice: 1
+  buyChanceSometimes: 0.3
+  buyChanceOften: 0.8
+  maxPurchasesPerAttempt: 1
+  frustrationPerFail: 0.5
+  frustrationForBadLoss: 1

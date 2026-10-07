@@ -8,7 +8,7 @@ A match-3 puzzle prototype built in Unity. The code lives in a single namespace 
 | Render pipeline | Built-in, 2D feature set |
 | Input | A bot plays the board. UI buttons use the new Input System (`com.unity.inputsystem` 1.18.0) through `InputSystemUIInputModule` |
 | Assemblies | `Match3Engine` (all game code, `Assets/Scripts`), `Match3Engine.Editor` (`Assets/Editor`) and `Match3Engine.Tests.EditMode` (`Assets/Tests/EditMode`) |
-| Tests | 23 edit-mode tests that run whole games with no scene |
+| Tests | 31 edit-mode tests that run whole games with no scene |
 | Scene | `Assets/Scenes/SampleScene.unity` (the only scene in the build) |
 
 ## 1. Project layout
@@ -44,6 +44,9 @@ Assets/
 │   │   ├── GameSimulation.cs     Resolves a full move instantly; owns board, progress, systems
 │   │   ├── TurnResult.cs         What a move did, as steps the view can replay
 │   │   └── MovePreview.cs        What a swap would destroy straight away
+│   ├── Players/                  Simulated players: who they are, when they pay, when they quit (pure C#)
+│   │   ├── PlayerModelSettings.cs  ScriptableObject with every tunable number; PlayerProfile, SpenderType
+│   │   └── LevelAnalyzer.cs      Runs a population through a level; LevelReport, PlayerPopulation
 │   ├── View/                     Presentation
 │   │   ├── BoardView.cs          Grid of TileViews, camera fitting
 │   │   ├── TileView.cs           One sprite, lerps to a target position
@@ -53,9 +56,10 @@ Assets/
 │       ├── Bots.cs               IBot, the four strategies, SkillBot, BotFactory
 │       ├── BatchRunner.cs        Plays a level many times and collects the results
 │       └── BotPlayer.cs          MonoBehaviour: a bot playing the level on screen
-├── Editor/BotBatchMenu.cs        Menu command: Puzzle Up > Run Bot Batch
-├── Tests/EditMode/               GameSimulationTests, BotTests, ObstacleTests + test assembly definition
-├── Levels/                       Level_01 (plain board) and Level_02 (crates and holes; the one the scene loads)
+├── Editor/                       Menu commands: Puzzle Up > Run Bot Batch, Run Player Model
+├── Tests/EditMode/               GameSimulationTests, BotTests, ObstacleTests, PlayerModelTests + test assembly definition
+├── Levels/                       Level_01 (plain board), Level_02 (crates and holes; the one the scene loads), Examples/ (easy, medium, hard)
+├── Settings/PlayerModel.asset    The player model's numbers
 ├── TextMesh Pro/                 TMP essential resources (imported package content)
 ├── InputSystem_Actions.inputactions   Unity default asset; not used by game code
 └── _Recovery/0.unity             Unity crash-recovery scene, not part of the game
@@ -189,6 +193,8 @@ A `TurnResult` holds `valid`, `shuffled`, and one `CascadeStep` per cascade. Eac
 - `PreviewMove(a, b)` returns a `MovePreview`: how many tiles the swap destroys straight away, how many of those a goal still needs, and how many power-ups it creates. Cascades are not included.
 - `Clone(seed)` returns an independent copy of the game in its current state. The copy has its own random generator, so the tiles it spawns are a guess at the future, not a look at what the real game will deal.
 
+**Extra moves.** `AddMoves(count)` gives the player more moves and puts a lost game back into play, shuffling first if the board has no move. It is refused once the game is won. The player model uses it for bought moves.
+
 **Shuffle.** When a turn ends with no valid move, the tiles on the board are randomly rearranged until there are no matches and at least one move. If 50 attempts fail, a fresh board is dealt.
 
 ### On screen (animated)
@@ -293,7 +299,56 @@ Ties are broken at random. `SkillBot` wraps a strategy with a skill from 0 to 1:
 ### Running a batch from the editor
 **Puzzle Up → Run Bot Batch** plays the selected `LevelData` asset (or, with none selected, the level on the open scene's `GameController`) 1,000 times with each strategy and with `GoalAwareBot` at skill 0.25, 0.5 and 0.75, and prints a table to the Console. The whole run takes roughly 25 seconds, most of it the look-ahead bot.
 
-## 7. View
+## 7. Player model
+
+Bots answer "can this level be beaten?". The player model answers what the game is actually about: **what does this level earn, and how many players does it lose?** It is plain C# in `Match3Engine.Players` and runs headless.
+
+### Who the players are
+`PlayerPopulation.Generate(settings, seed)` creates a crowd of `PlayerProfile`s:
+
+| Attribute | How it is drawn (defaults) |
+|---|---|
+| `skill` | Bell-shaped around 0.5, spread 0.2, clamped to 0–1. Fed to `SkillBot` as the chance of playing the strategy's move rather than a random one. |
+| `patience` | Evenly between 2 and 5 |
+| `spender` | 10% `Often`, 25% `Sometimes`, the remaining 65% `Never` |
+
+### What one player does on a level
+`LevelAnalyzer.SimulatePlayer` loops over attempts, each a fresh `GameSimulation` played by a `SkillBot`:
+
+```mermaid
+flowchart TD
+    A[Play an attempt to the end] --> B{Won?}
+    B -- yes --> P[Passed]
+    B -- no --> C{"Near miss?<br/>goal progress ≥ 85%"}
+    C -- yes --> D{"Buys extra moves?<br/>chance by spender type"}
+    D -- yes --> E["Revenue += price<br/>AddMoves(5), keep playing"] --> B
+    D -- no --> F
+    C -- no --> F["Frustration += 0.5 + (1 − progress)"]
+    F --> G{Frustration > patience?}
+    G -- yes --> Q[Quit the game]
+    G -- no --> A
+```
+
+- The buy chance on a near miss is 0 for `Never`, 0.3 for `Sometimes`, 0.8 for `Often`, and extra moves can be bought once per attempt.
+- A close loss adds about 0.5 frustration and a hopeless one up to 1.5, so the same number of fails drives players away faster on a level that feels out of reach.
+- A player still stuck after 30 attempts is counted as having quit.
+
+Every number above is a field on `PlayerModelSettings`, a `ScriptableObject`. The project's copy is `Assets/Settings/PlayerModel.asset`; edit it in the Inspector to tune the model.
+
+### The report
+`LevelAnalyzer.Run(level, settings, seed)` sends the whole population through and returns a `LevelReport`: `FirstAttemptPassRate`, `AverageAttemptsToPass`, `RevenuePer100Players`, `QuitRate`, `NearMissShare` (how many fails were close enough to sell moves on), plus the raw lists `movesLeftOnWin` and `progressOnFail`. Every player ends as either passed or quit. The same level, settings and seed always give the same report.
+
+**Puzzle Up → Run Player Model** prints this for the selected `LevelData` assets, or for every level in the project if none is selected. With the default settings and 300 players:
+
+| Level | First-try pass | Attempts to pass | Revenue per 100 | Quit | Near miss (of fails) |
+|---|---|---|---|---|---|
+| `Example_Easy` (25 moves, 20 + 20) | 98% | 1.0 | 0.0 | 0% | 100% |
+| `Example_Medium` (11 moves, 20 + 20) | 34% | 2.3 | 6.7 | 15% | 43% |
+| `Example_Hard` (7 moves, 30 + 30) | 0% | 2.3 | 1.0 | 99% | 1% |
+
+This is the shape the game is built on: the easy level earns nothing, the hard one loses almost everyone, and the one in between makes the money at the cost of some players.
+
+## 8. View
 
 ### `BoardView`
 - `InitializeBoard(model)` — instantiates one `TilePrefab` per cell under the `Board` transform and stores them in a `TileView[,]` that mirrors the model. Also creates a `SpriteMask` the size of the board at runtime and sets every tile to `VisibleInsideMask`, so tiles waiting above the board are hidden until they fall into it.
@@ -319,7 +374,7 @@ Sits on the `HudCanvas`. `Refresh(progress)` writes the moves left and each goal
 ### `WatchControls`
 Sits on the `HudCanvas` and wires the buttons to `BotPlayer`: three speed buttons (1×, 2×, 4×, the active one tinted), Skip, and Play Again on the result panel. It also shows which bot is playing.
 
-## 8. Scene wiring
+## 9. Scene wiring
 
 `SampleScene` has five root objects:
 
@@ -341,7 +396,7 @@ Sits on the `HudCanvas` and wires the buttons to `BotPlayer`: three speed button
 
 `tileSprites` on `GameController` has ten mappings — the five colours, the four power-ups and the crate. A hole has no sprite; it shows as a gap.
 
-## 9. Known limitations
+## 10. Known limitations
 
 Behaviours visible in the current code that are worth knowing before extending it:
 
@@ -356,8 +411,11 @@ Behaviours visible in the current code that are worth knowing before extending i
 9. **The crate sprite is a generated placeholder**, and the board has no background, so a hole is only visible as a missing tile.
 10. **A human cannot play.** The swipe `InputSystem` component is disabled in the scene. Enabling it works, but it would compete with the bot for the same board.
 11. **Speed is global.** It uses `Time.timeScale`, so anything else that runs on game time speeds up with it.
+12. **The player model looks at one level at a time.** Every player arrives fresh, with no frustration carried over from earlier levels, and the population is the same for every level.
+13. **Extra moves exist only in the headless model.** Nothing on screen offers or shows a purchase.
+14. **The model's numbers are first guesses.** They produce the intended shape but have not been tuned against anything.
 
-## 10. Extension points
+## 11. Extension points
 
 - **New tile colour** — add it inside the `Red..Pink` range of `TileType`, then add it to `availableTileTypes` and `tileSprites` in the Inspector.
 - **New power-up** — add the enum value after the colours, extend `PowerUpSystem.IsPowerUp` / `GetExplosionArea`, add a creation rule in `MatchSystem`, and map a sprite.
@@ -367,6 +425,6 @@ Behaviours visible in the current code that are worth knowing before extending i
 - **New obstacle** — add it at the end of `TileType`, then decide each row of the obstacle table in section 3 and put the rule in the matching system. Map a sprite on `GameController`.
 - **New goal type** — `LevelGoal` only knows "collect a colour"; other goals need a new field there and a rule in `LevelProgress`.
 
-## 11. Version control
+## 12. Version control
 
 The project root is a git repository on branch `main`, with `origin` at `github.com/itu-itis25-baydarb21/PuzzleUp`. `Assets/`, `Packages/` and `ProjectSettings/` are tracked; `Library/`, `Temp/`, `Logs/`, `UserSettings/` and generated solution/project files are excluded by the standard Unity `.gitignore`.

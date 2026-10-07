@@ -102,6 +102,17 @@ namespace Match3Engine.Core
             if (MovesLeft > 0) MovesLeft--;
         }
 
+        // Extra moves, as bought after running out. A lost level goes back to being played.
+        // Returns false if the level is already won, where extra moves mean nothing.
+        public bool AddMoves(int count)
+        {
+            if (State == LevelState.Won || count <= 0) return false;
+
+            MovesLeft += count;
+            State = LevelState.Playing;
+            return true;
+        }
+
         // Call once for every tile that gets destroyed
         public void Collect(TileType type)
         {

@@ -191,6 +191,18 @@ namespace Match3Engine.Simulation
             return turn;
         }
 
+        // Gives the player more moves, bringing a lost game back to life.
+        // Returns false if the game is already won.
+        public bool AddMoves(int count)
+        {
+            if (!Progress.AddMoves(count)) return false;
+
+            // A game that ended was never checked for a dead board, so I check now
+            if (!moveFinder.HasValidMove()) Shuffle();
+
+            return true;
+        }
+
         private CascadeStep ResolveStep(MatchResult result)
         {
             CascadeStep step = new CascadeStep();

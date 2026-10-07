@@ -71,11 +71,9 @@ namespace Match3Engine.AI
 
     public static class BatchRunner
     {
-        // Plays one whole game with no visuals
-        public static GameResult PlayGame(LevelData level, IBot bot, int seed)
+        // Lets the bot play a game that is already set up until it is won or lost
+        public static void PlayToEnd(GameSimulation simulation, IBot bot)
         {
-            GameSimulation simulation = new GameSimulation(level, seed);
-
             while (simulation.Progress.State == LevelState.Playing)
             {
                 List<Move> moves = simulation.GetValidMoves();
@@ -84,6 +82,13 @@ namespace Match3Engine.AI
                 Move move = bot.ChooseMove(simulation, moves);
                 simulation.PlayMove(move.a, move.b);
             }
+        }
+
+        // Plays one whole game with no visuals
+        public static GameResult PlayGame(LevelData level, IBot bot, int seed)
+        {
+            GameSimulation simulation = new GameSimulation(level, seed);
+            PlayToEnd(simulation, bot);
 
             return new GameResult
             {
