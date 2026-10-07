@@ -26,31 +26,41 @@ namespace Match3Engine.Core
         // True from the moment a swap starts until the board has fully settled
         private bool isBusy;
 
-        [Header("Board Settings")]
-        public int boardWidth = 8;
-        public int boardHeight = 8;
-        public TileType[] availableTileTypes;
+        // Moves and goals for the current attempt
+        public LevelProgress Progress { get; private set; }
+
+        [Header("Level")]
+        public LevelData level;
 
         [Header("View References")]
         public BoardView boardView;
+        public LevelHud levelHud;
         public TileSpriteMapping[] tileSprites;
 
         private void Start()
         {
-            boardModel = new BoardModel(boardWidth, boardHeight);
+            if (level == null)
+            {
+                Debug.LogError("GameController has no level assigned.", this);
+                return;
+            }
+
+            boardModel = new BoardModel(level.width, level.height);
+            Progress = new LevelProgress(level.moveLimit, level.goals);
 
             commandSystem = new CommandSystem();
             matchSystem = new MatchSystem(boardModel);
             gravitySystem = new GravitySystem(boardModel);
-            spawnSystem = new SpawnSystem(boardModel, availableTileTypes);
+            spawnSystem = new SpawnSystem(boardModel, level.availableTileTypes);
             powerUpSystem = new PowerUpSystem(boardModel); 
 
             boardView.InitializeBoard(boardModel);
 
-            boardView.CenterAndScaleCamera(boardWidth, boardHeight);
+            boardView.CenterAndScaleCamera(level.width, level.height);
 
             spawnSystem.SpawnTiles();
             boardView.SyncVisualsWithData(GetSpriteForType);
+            levelHud.Refresh(Progress);
         }
 
         // Helper method to find the right image for my tile types
@@ -66,6 +76,9 @@ namespace Match3Engine.Core
 
         public void ProcessPlayerSwap(Vector2Int posA, Vector2Int posB)
         {
+            // No more moves once the level has been won or lost
+            if (Progress == null || Progress.State != LevelState.Playing) return;
+
             // Ignoring swipes while the board is still animating, or ones that leave the board
             if (isBusy) return;
             if (!boardModel.IsValidPosition(posA.x, posA.y) || !boardModel.IsValidPosition(posB.x, posB.y)) return;
@@ -102,10 +115,11 @@ namespace Match3Engine.Core
                 MatchResult powerUpResult = new MatchResult();
                 powerUpResult.matchedTiles = explosionArea;
 
+                SpendMove();
                 yield return DestroyAndRefillRoutine(powerUpResult);
                 yield return RunGameplayPipelineRoutine(new Vector2Int(-1, -1), new Vector2Int(-1, -1));
 
-                isBusy = false;
+                FinishTurn();
                 yield break;
             }
 
@@ -126,8 +140,24 @@ namespace Match3Engine.Core
             }
 
             // Passing the exact touch coordinates into my pipeline so it knows where to spawn specials!
+            SpendMove();
             yield return RunGameplayPipelineRoutine(posA, posB);
 
+            FinishTurn();
+        }
+
+        // Only swaps that actually do something cost a move; reverted swaps are free
+        private void SpendMove()
+        {
+            Progress.UseMove();
+            levelHud.Refresh(Progress);
+        }
+
+        // The board has settled, so now I can decide if the level is won or lost
+        private void FinishTurn()
+        {
+            Progress.Evaluate();
+            levelHud.Refresh(Progress);
             isBusy = false;
         }
 
@@ -162,6 +192,13 @@ namespace Match3Engine.Core
         // Clears the given tiles, then lets the survivors and the new tiles fall into place together
         private IEnumerator DestroyAndRefillRoutine(MatchResult result)
         {
+            // Counting what is about to be destroyed towards my goals, before the types are wiped
+            foreach (Vector2Int pos in result.matchedTiles)
+            {
+                Progress.Collect(boardModel.GetTile(pos.x, pos.y));
+            }
+            levelHud.Refresh(Progress);
+
             ICommand destroyCmd = new DestroyCommand(boardModel, result);
             commandSystem.EnqueueCommand(destroyCmd);
             commandSystem.ProcessNextCommand();

@@ -22,6 +22,8 @@ Assets/
 │   ├── Core/                     Data model + orchestrator
 │   │   ├── TileType.cs           Enum of colours and power-ups
 │   │   ├── BoardModel.cs         The grid (pure C#)
+│   │   ├── LevelData.cs          ScriptableObject: board size, colours, move limit, goals
+│   │   ├── LevelProgress.cs      Moves left, goal progress, won/lost (pure C#)
 │   │   └── GameController.cs     MonoBehaviour that wires and drives everything
 │   ├── Commands/                 Board mutations as ICommand objects
 │   │   ├── ICommand.cs
@@ -38,9 +40,11 @@ Assets/
 │   │   └── InputSystem.cs        MonoBehaviour: swipe → swap request
 │   ├── View/                     Presentation
 │   │   ├── BoardView.cs          Grid of TileViews, camera fitting
-│   │   └── TileView.cs           One sprite, lerps to a target position
+│   │   ├── TileView.cs           One sprite, lerps to a target position
+│   │   └── LevelHud.cs           Moves, goals and result text (uGUI + TextMesh Pro)
 │   └── AI/                       Empty (placeholder)
-├── Levels/                       Empty (placeholder)
+├── Levels/Level_01.asset         The level the scene loads
+├── TextMesh Pro/                 TMP essential resources (imported package content)
 ├── InputSystem_Actions.inputactions   Unity default asset; not used by game code
 └── _Recovery/0.unity             Unity crash-recovery scene, not part of the game
 ```
@@ -107,10 +111,20 @@ A `TileType[width, height]` grid with bounds-safe accessors. `GetTile` returns `
 
 Coordinates are `(x, y)` with `(0, 0)` at the **bottom-left**; `y` increases upward. Grid coordinates equal world coordinates — tile `(x, y)` is drawn at world position `(x, y)` with one unit per cell. Input and the camera both depend on this.
 
-### `GameController`
-Inspector-configured: board size, `availableTileTypes` (what can spawn), a `BoardView` reference and a `TileType → Sprite` table (`TileSpriteMapping[]`).
+### `LevelData`
+A `ScriptableObject` (create via **Assets → Create → Puzzle Up → Level**) holding everything that defines a level: `width`, `height`, `availableTileTypes`, `moveLimit`, and `goals` — a list of `LevelGoal { type, amount }`, each meaning "destroy this many tiles of this colour".
 
-`Start()` builds the model and the five systems, asks the view to instantiate the tile grid and fit the camera, fills the board with `SpawnSystem.SpawnTiles()` and does a first visual sync.
+### `LevelProgress`
+Plain C# state for one attempt: `MovesLeft`, the remaining count per goal colour, and `State` (`Playing`, `Won`, `Lost`).
+
+- `UseMove()` — called for every swap that does something. A swap that is reverted costs nothing.
+- `Collect(type)` — called for every tile destroyed, by a match or a power-up.
+- `Evaluate()` — called once the board has settled after a move: `Won` if every goal is complete, otherwise `Lost` if no moves remain. A goal completed on the last move is a win.
+
+### `GameController`
+Inspector-configured: the `LevelData` to play, a `BoardView` and `LevelHud` reference, and a `TileType → Sprite` table (`TileSpriteMapping[]`). Board size and spawnable colours come from the level.
+
+`Start()` builds the model, a `LevelProgress` and the five systems, asks the view to instantiate the tile grid and fit the camera, fills the board with `SpawnSystem.SpawnTiles()` and does a first visual sync.
 
 ## 4. Turn flow
 
@@ -138,7 +152,9 @@ flowchart TD
 
 `DestroyAndRefillRoutine` is shared by the match and power-up paths. After clearing, it runs gravity and spawn back to back on the model and hands their results (`GravitySystem.LastMoves`, `SpawnSystem.LastSpawned`) to the view, so surviving tiles and new tiles fall at the same time. It then waits on `BoardView.IsDropping` rather than a fixed delay.
 
-`GameController` holds an `isBusy` flag for the whole turn: `ProcessPlayerSwap` ignores swipes while it is set, and also rejects swaps where either cell is off the board.
+`GameController` holds an `isBusy` flag for the whole turn: `ProcessPlayerSwap` ignores swipes while it is set, rejects swaps where either cell is off the board, and accepts nothing once the level is won or lost.
+
+Level tracking hooks into the same flow: a valid swap spends a move, `DestroyAndRefillRoutine` counts each tile toward the goals just before destroying it, and the turn ends with `LevelProgress.Evaluate()`. After each of these the controller pushes the progress to `LevelHud.Refresh`.
 
 The cascade loop runs until a full pass finds no matches. The swap positions are only passed on the **first** pass; later passes use `(-1, -1)` so that power-ups created by chain reactions are placed by shape rather than by player touch.
 
@@ -221,21 +237,27 @@ Holds a `SpriteRenderer`. `UpdateVisuals` assigns the sprite and rescales it to 
 
 `SnapToPosition` teleports with no animation. Views are never destroyed or instantiated after start-up: a cleared tile's view keeps its place in the array with no sprite and is reused for the next spawn. Clearing itself is still an instant sprite removal.
 
+### `LevelHud`
+Sits on the `HudCanvas`. `Refresh(progress)` writes the moves left and each goal's remaining count (or "Done") into two TextMesh Pro labels, and shows a dimmed full-screen panel with "Level Complete!" or "Out of Moves" when the level ends. It only displays what the controller gives it.
+
 ## 7. Scene wiring
 
-`SampleScene` has three root objects:
+`SampleScene` has four root objects:
 
 | GameObject | Components | Notes |
 |---|---|---|
 | `Main Camera` | Camera | Repositioned and resized at runtime by `BoardView` |
 | `GameManager` | `GameController`, `BoardView`, `InputSystem` | All references are wired in the Inspector |
 | `Board` | Transform only | Parent for instantiated tiles |
+| `HudCanvas` | Canvas, CanvasScaler, GraphicRaycaster, `LevelHud` | Screen Space Overlay, scales with screen size (1080×1920 reference). Children: `MovesText`, `GoalsText`, `ResultPanel` → `ResultText` |
 
-Scene values on `GameController`:
+`GameController` points at `Assets/Levels/Level_01.asset`:
 
-- Board is **10 × 10** (the script default is 8 × 8).
+- Board is **8 × 8**, 20 moves.
 - `availableTileTypes`: Red, Green, Blue, Yellow, Pink. `Purple` exists in the enum but is not spawned and has no sprite.
-- `tileSprites`: nine mappings — the five colours above plus the four power-ups.
+- Goals: 20 Red and 20 Blue.
+
+`tileSprites` on `GameController` has nine mappings — the five colours above plus the four power-ups.
 
 ## 8. Known limitations
 
@@ -246,7 +268,7 @@ Behaviours visible in the current code that are worth knowing before extending i
 3. **Power-ups do not chain.** A power-up caught in another explosion is simply removed without firing.
 4. **ColorBomb + power-up** destroys only tiles of that power-up's type, since the swapped tile's type is used as the target "colour".
 5. **No deadlock detection or shuffle** when no moves remain.
-6. **No game layer yet** — no score, move counter, goals, levels, UI, audio or persistence. `Assets/Levels` and `Assets/Scripts/AI` are empty.
+6. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is no restart or next level (stop and press Play again), no score, audio or persistence. `Assets/Scripts/AI` is empty.
 7. **No tests**, although the Test Framework package is installed. The pure-C# model and systems are testable as they stand, apart from `SpawnSystem`'s use of `UnityEngine.Random`.
 
 ## 9. Extension points
@@ -254,7 +276,8 @@ Behaviours visible in the current code that are worth knowing before extending i
 - **New tile colour** — add it inside the `Red..Pink` range of `TileType`, then add it to `availableTileTypes` and `tileSprites` in the Inspector.
 - **New power-up** — add the enum value after the colours, extend `PowerUpSystem.IsPowerUp` / `GetExplosionArea`, add a creation rule in `MatchSystem`, and map a sprite.
 - **New board action** — implement `ICommand` and run it from `GameController` through `CommandSystem`.
-- **Levels** — `GameController` already takes board size and tile set as data; a level asset would supply those in place of Inspector values.
+- **New level** — create a `LevelData` asset and assign it to `GameController.level`.
+- **New goal type** — `LevelGoal` only knows "collect a colour"; other goals need a new field there and a rule in `LevelProgress`.
 
 ## 10. Version control
 
