@@ -1,6 +1,6 @@
 # Puzzle Up! — Architecture
 
-A match-3 studio game built in Unity: the player designs a level, simulated players attempt it, and the level is judged by what it earns and how many players it loses. The code lives in a single namespace root, `Match3Engine`, and is organised around one idea: **the game is plain data that resolves instantly, and the view only replays what happened**.
+A match-3 studio game built in Unity: the player runs a studio, designs levels, publishes them into a game, and lives off what simulated players spend on it. The code lives in a single namespace root, `Match3Engine`, and is organised around one idea: **the game is plain data that resolves instantly, and the view only replays what happened**.
 
 | | |
 |---|---|
@@ -8,7 +8,7 @@ A match-3 studio game built in Unity: the player designs a level, simulated play
 | Render pipeline | Built-in, 2D feature set |
 | Input | A bot plays the board. UI buttons use the new Input System (`com.unity.inputsystem` 1.18.0) through `InputSystemUIInputModule` |
 | Assemblies | `Match3Engine` (all game code, `Assets/Scripts`), `Match3Engine.Editor` (`Assets/Editor`) and `Match3Engine.Tests.EditMode` (`Assets/Tests/EditMode`) |
-| Tests | 37 edit-mode tests that run whole games with no scene |
+| Tests | 48 edit-mode tests that run whole games with no scene |
 | Scene | `Assets/Scenes/SampleScene.unity` (the only scene in the build) |
 
 ## 1. Project layout
@@ -25,6 +25,7 @@ Assets/
 │   │   ├── BoardModel.cs         The grid (pure C#)
 │   │   ├── LevelData.cs          ScriptableObject: board size, colours, obstacles, move limit, goals
 │   │   ├── LevelProgress.cs      Moves left, goal progress, won/lost (pure C#)
+│   │   ├── Seeds.cs              Scrambles seeds before they create a random generator
 │   │   └── GameController.cs     MonoBehaviour that animates one level on screen
 │   ├── Commands/                 Board mutations as ICommand objects
 │   │   ├── ICommand.cs
@@ -47,7 +48,12 @@ Assets/
 │   ├── Players/                  Simulated players: who they are, when they pay, when they quit (pure C#)
 │   │   ├── PlayerModelSettings.cs  ScriptableObject with every tunable number; PlayerProfile, SpenderType
 │   │   ├── LevelAnalyzer.cs      Runs a population through a level; LevelReport, PlayerPopulation
+│   │   ├── CohortSimulation.cs   A group of new players going through a whole game; CohortReport
 │   │   └── LevelVerdict.cs       One-line rating of a report
+│   ├── Studio/                   The company layer
+│   │   ├── StudioSettings.cs     ScriptableObject with the studio's rules and prices
+│   │   ├── StudioState.cs        Money, month, published levels, last month's numbers (pure C#)
+│   │   └── StudioScreen.cs       The studio home screen; saving; running a month
 │   ├── Designer/                 The in-game level editor (uGUI)
 │   │   ├── LevelDesigner.cs      The designer screen: edit, test, watch
 │   │   └── Stepper.cs            A number with minus and plus buttons
@@ -61,9 +67,9 @@ Assets/
 │       ├── BatchRunner.cs        Plays a level many times and collects the results
 │       └── BotPlayer.cs          MonoBehaviour: a bot playing the level on screen
 ├── Editor/                       Menu commands: Puzzle Up > Run Bot Batch, Run Player Model
-├── Tests/EditMode/               GameSimulationTests, BotTests, ObstacleTests, PlayerModelTests, LevelVerdictTests + test assembly definition
+├── Tests/EditMode/               GameSimulationTests, BotTests, ObstacleTests, PlayerModelTests, LevelVerdictTests, StudioTests + test assembly definition
 ├── Levels/                       Level_01 (plain board), Level_02 (crates and holes; the one the scene loads), Examples/ (easy, medium, hard)
-├── Settings/PlayerModel.asset    The player model's numbers
+├── Settings/                     PlayerModel.asset (the player model's numbers), Studio.asset (the studio's rules)
 ├── TextMesh Pro/                 TMP essential resources (imported package content)
 ├── InputSystem_Actions.inputactions   Unity default asset; not used by game code
 └── _Recovery/0.unity             Unity crash-recovery scene, not part of the game
@@ -109,7 +115,8 @@ Dependency rules that the code currently follows:
 - **`GameSimulation` is the game.** It owns the board, the progress, the systems and the random generator, and never touches a `MonoBehaviour`, a scene or a frame. Anything that can call `PlayMove` can play: the on-screen controller, a test, or a bot.
 - **A move resolves completely before anything is drawn.** `PlayMove` returns a `TurnResult` describing what happened; the board is already in its final state.
 - **The view replays, it does not decide.** `BoardView` is told which tiles were destroyed, which fell and which spawned. It only reads the model directly for a full repaint (start of level, after a shuffle).
-- **One seed, one game.** All randomness comes from a single `System.Random` created from the seed, so the same level, seed and moves always give the same result.
+- **One seed, one game.** All of a game's randomness comes from a single `System.Random` created from the seed, so the same level, seed and moves always give the same result.
+- **Seeds are scrambled first.** `System.Random` gives related numbers for related seeds, and this code uses many (attempts 1, 2, 3 of one player; the board and the bot of one game). Every generator is therefore created from `Seeds.Mix(seed, salt)` with its own salt: boards, each kind of bot, the population and each player's purchase decisions.
 
 ## 3. Core
 
@@ -304,7 +311,7 @@ Ties are broken at random. `SkillBot` wraps a strategy with a skill from 0 to 1:
 - **Play again.** `PlayAgain()` calls `RestartLevel()` and discards the bot so a new one is made for the new seed.
 
 ### Running a batch from the editor
-**Puzzle Up → Run Bot Batch** plays the selected `LevelData` asset (or, with none selected, the level on the open scene's `GameController`) 1,000 times with each strategy and with `GoalAwareBot` at skill 0.25, 0.5 and 0.75, and prints a table to the Console. The whole run takes roughly 25 seconds, most of it the look-ahead bot.
+**Puzzle Up → Run Bot Batch** plays the selected `LevelData` asset (or, with none selected, the level on the open scene's `GameController`) 1,000 times with each strategy and with `GoalAwareBot` at skill 0.25, 0.5 and 0.75, and prints a table to the Console. The whole run takes roughly 30 seconds, most of it the look-ahead bot.
 
 ## 7. Player model
 
@@ -339,19 +346,24 @@ flowchart TD
 - The buy chance on a near miss is 0 for `Never`, 0.3 for `Sometimes`, 0.8 for `Often`, and extra moves can be bought once per attempt.
 - A close loss adds about 0.5 frustration and a hopeless one up to 1.5, so the same number of fails drives players away faster on a level that feels out of reach.
 - A player still stuck after 30 attempts is counted as having quit.
+- Winning halves a player's frustration rather than clearing it (`frustrationKeptAfterWin`). This only matters when levels are played in a row, as in the studio.
 
 Every number above is a field on `PlayerModelSettings`, a `ScriptableObject`. The project's copy is `Assets/Settings/PlayerModel.asset`; edit it in the Inspector to tune the model.
 
 ### The report
 `LevelAnalyzer.Run(level, settings, seed)` sends the whole population through and returns a `LevelReport`: `FirstAttemptPassRate`, `AverageAttemptsToPass`, `RevenuePer100Players`, `QuitRate`, `NearMissShare` (how many fails were close enough to sell moves on), plus the raw lists `movesLeftOnWin` and `progressOnFail`. Every player ends as either passed or quit. The same level, settings and seed always give the same report.
 
-**Puzzle Up → Run Player Model** prints this for the selected `LevelData` assets, or for every level in the project if none is selected. With the default settings and 300 players:
+### A whole game
+`CohortSimulation` sends a group of new players through a list of levels in order. Each level's `LevelReport` only counts the players who passed the one before; a player who quits never sees the next level, and frustration follows them from level to level. `SimulateNextPlayer()` handles one player so a long run can be spread over frames; `CohortSimulation.Run` does it in one call. The result is a `CohortReport`: `started`, `finished`, `Retention`, `Revenue`, `LevelsPlayed` and the per-level reports.
+
+### From the editor
+**Puzzle Up → Run Player Model** prints the single-level report for the selected `LevelData` assets, or for every level in the project if none is selected. With the default settings and 300 players:
 
 | Level | First-try pass | Attempts to pass | Revenue per 100 | Quit | Near miss (of fails) |
 |---|---|---|---|---|---|
-| `Example_Easy` (25 moves, 20 + 20) | 98% | 1.0 | 0.0 | 0% | 100% |
-| `Example_Medium` (11 moves, 20 + 20) | 34% | 2.3 | 6.7 | 15% | 43% |
-| `Example_Hard` (7 moves, 30 + 30) | 0% | 2.3 | 1.0 | 99% | 1% |
+| `Example_Easy` (25 moves, 20 + 20) | 100% | 1.0 | 0.0 | 0% | 100% |
+| `Example_Medium` (11 moves, 20 + 20) | 38% | 2.1 | 9.0 | 15% | 45% |
+| `Example_Hard` (7 moves, 30 + 30) | 1% | 1.3 | 0.3 | 99% | 2% |
 
 This is the shape the game is built on: the easy level earns nothing, the hard one loses almost everyone, and the one in between makes the money at the cost of some players.
 
@@ -390,7 +402,48 @@ Turns a `LevelReport` into one of five ratings, checked in this order:
 ### `Stepper`
 A reusable minus / value / plus control with `min`, `max` and `step`. `Changed` fires only for button presses; `SetValue` and `SetRange` from code are silent. A button that would do nothing is greyed out.
 
-## 9. View
+## 9. Studio
+
+The company layer: the frame that gives the designer a reason to care. The player has money, a game made of published levels, and a monthly crowd of new players.
+
+```mermaid
+flowchart LR
+    S[Studio screen] -->|Design a level| D[Level designer]
+    D -->|"Test ($3)"| D
+    D -->|"Publish ($10)"| S
+    D -->|Back| S
+    D -->|Watch| W[Bot plays on the board]
+    W -->|Edit| D
+    S -->|Run a month| M["New players go through<br/>every level in order"]
+    M -->|sales + ads, next month's crowd| S
+```
+
+### The rules (`StudioSettings`, `Assets/Settings/Studio.asset`)
+
+| Rule | Default |
+|---|---|
+| Starting money | $30 |
+| Testing a level in the designer | $3 each time |
+| Publishing a level | $10 |
+| Sales | $1 per extra-moves purchase (`PlayerModelSettings.extraMovesPrice`) |
+| Ad income | $0.02 every time any player starts any level |
+| New players in month 1 | 200 |
+| Next month's new players | This month's × a factor from 0.6 (everyone quit) to 1.4 (everyone finished the game), kept between 50 and 600 |
+| Longest game | 15 levels |
+
+Testing costs money so that a level cannot be tuned by endless free trial and error. Watching a bot play is free. Ad income means a game that only keeps its players still earns a little, so an easy game is poor rather than dead.
+
+### `StudioState`
+Plain serializable data with the rules applied to it: `money`, `month`, `cohortSize`, the published `levels` (each stored as JSON), and last month's per-level `LevelStats`. `TrySpend`, `PublishBlocker` / `Publish` and `ApplyMonth(report, rules)` are the only ways it changes. `ApplyMonth` books sales and ad income, records the funnel, sets next month's cohort from retention and advances the month.
+
+### `StudioScreen`
+The home screen and the owner of the state. It loads `studio.json` from `Application.persistentDataPath` on start and saves after every change. It shows money, month and new players, a table of the game level by level (players who reached it, passed, quit, and sales, from last month), and a summary line.
+
+- **Design a level** opens the designer. The designer asks this screen for money (`TrySpend`) when testing and calls `Publish` when publishing.
+- **Run a month** rebuilds the levels from JSON and runs a `CohortSimulation` in a coroutine, a few players per frame with a progress percentage, then applies the result. The cohort's seed comes from the month number, so a given month of a given game always plays out the same.
+- **Start a new studio** wipes the save back to the starting money with no levels.
+
+## 10. View
 
 ### `BoardView`
 - `InitializeBoard(model)` — instantiates one `TilePrefab` per cell under the `Board` transform and stores them in a `TileView[,]` that mirrors the model. Also creates a `SpriteMask` the size of the board at runtime and sets every tile to `VisibleInsideMask`, so tiles waiting above the board are hidden until they fall into it.
@@ -416,9 +469,9 @@ Sits on the `HudCanvas`. `Refresh(progress)` writes the moves left and each goal
 ### `WatchControls`
 Sits on the `HudCanvas` and wires the buttons to `BotPlayer`: three speed buttons (1×, 2×, 4×, the active one tinted), Skip, and Play Again on the result panel. It also shows which bot is playing.
 
-## 10. Scene wiring
+## 11. Scene wiring
 
-`SampleScene` has six root objects:
+`SampleScene` has six root objects. The game opens on the studio screen.
 
 | GameObject | Components | Notes |
 |---|---|---|
@@ -427,9 +480,9 @@ Sits on the `HudCanvas` and wires the buttons to `BotPlayer`: three speed button
 | `EventSystem` | EventSystem, `InputSystemUIInputModule` | Needed for the UI buttons |
 | `Board` | Transform only | Parent for instantiated tiles |
 | `HudCanvas` | Canvas, CanvasScaler, GraphicRaycaster, `LevelHud`, `WatchControls` | Screen Space Overlay, scales with screen size (1080×1920 reference). Children: `MovesText`, `GoalsText`, `WatchBar` (speed, skip and edit buttons), `BotLabel`, `ResultPanel` → `ResultText`, `AgainButton` |
-| `DesignerCanvas` | Canvas (sorting order 10), CanvasScaler, GraphicRaycaster, `LevelDesigner` | Child `Screen` is the opaque designer panel: a vertical layout of the board grid, the size, rules and goal steppers, the Test / Player / Watch buttons and the results |
+| `DesignerCanvas` | Canvas (sorting order 10), CanvasScaler, GraphicRaycaster, `LevelDesigner`, `StudioScreen` | Two opaque full-screen children, one shown at a time: `StudioScreen` (stats, level table, Design / Run a month / reset) and `Screen`, the designer (board grid, steppers, Test / Player / Watch, Back to studio / Publish, results) |
 
-`GameController` points at `Assets/Levels/Level_02.asset`. This is what the designer starts from the first time; after that it loads the saved design.
+`GameController` points at `Assets/Levels/Level_02.asset`. This is what the designer starts from the first time; after that it loads the saved design. Published levels live in the studio's save, not in assets.
 
 - Board is **8 × 8**, 25 moves, five colours (Red, Green, Blue, Yellow, Pink). `Purple` exists in the enum but is not spawned and has no sprite.
 - Obstacles: a hole in each corner, and eight crates in a 4 × 2 block near the bottom.
@@ -439,29 +492,33 @@ Sits on the `HudCanvas` and wires the buttons to `BotPlayer`: three speed button
 
 `tileSprites` on `GameController` has ten mappings — the five colours, the four power-ups and the crate. A hole has no sprite; it shows as a gap.
 
-## 11. Known limitations
+## 12. Known limitations
 
 Behaviours visible in the current code that are worth knowing before extending it:
 
 1. **Power-ups do not chain.** A power-up caught in another explosion is simply removed without firing.
 2. **ColorBomb + power-up** destroys only tiles of that power-up's type, since the swapped tile's type is used as the target "colour".
-3. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is one level at a time: no level list, no score, no audio. The design being edited is the only thing saved.
+3. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is no audio and no win or lose condition for the studio itself. The design being edited and the studio's state are saved; there is one save.
 4. **A shuffle is not animated.** The board is simply repainted in its new arrangement.
 5. **The bot comparison only appears in the Console.** The designer shows the player model's numbers, but the per-strategy bot table is still an editor menu.
-6. **The look-ahead bot is slow** compared with the others — about 14 seconds per 1,000 games on `Level_01`, against 1 to 3 seconds.
+6. **The look-ahead bot is slow** compared with the others — about 16 seconds per 1,000 games on `Level_01`, against 1 to 3 seconds.
 7. **Crates fall; there is no fixed blocker.** An obstacle that stays put and stops tiles falling would need tiles to slide in diagonally underneath it, which gravity does not do.
 8. **The crate sprite is a generated placeholder**, and the board has no background, so a hole is only visible as a missing tile.
 9. **A human cannot play.** The swipe `InputSystem` component is disabled in the scene. Enabling it works, but it would compete with the bot for the same board.
 10. **Speed is global.** It uses `Time.timeScale`, so anything else that runs on game time speeds up with it.
-11. **The player model looks at one level at a time.** Every player arrives fresh, with no frustration carried over from earlier levels, and the population is the same for every level.
+11. **The designer's test looks at one level on its own.** It uses a fresh crowd with no frustration, so a level can test well and still lose tired players when it sits late in a hard game. Only running a month shows that.
 12. **Extra moves exist only in the headless model.** Nothing on screen offers or shows a purchase.
 13. **The model's numbers are first guesses.** They produce the intended shape but have not been tuned against anything.
 14. **The designer is laid out for a portrait screen.** It is a single 1080 × 1920 column; a wide Game view squeezes it.
 15. **The verdict thresholds are first guesses**, like the rest of the player model's numbers.
 16. **The designer has no automated tests.** Its rating rules do; the screen itself was checked by driving it in the editor.
+17. **Published levels cannot be edited, reordered or removed.** The only way back is to start a new studio.
+18. **The economy is unbalanced.** Costs are fixed while income grows with every level and every player, so after a few decent levels money stops being a constraint.
+19. **Every month's crowd is drawn the same way.** The mix of skill, patience and spending does not shift over time, and players from earlier months do not come back for new levels.
+20. **Months vary by luck.** With a few hundred players and under one in ten buying, the same level can earn noticeably more or less from one month to the next.
 
 
-## 12. Extension points
+## 13. Extension points
 
 - **New tile colour** — add it inside the `Red..Pink` range of `TileType`, then add it to `availableTileTypes` and `tileSprites` in the Inspector.
 - **New power-up** — add the enum value after the colours, extend `PowerUpSystem.IsPowerUp` / `GetExplosionArea`, add a creation rule in `MatchSystem`, and map a sprite.
@@ -471,6 +528,6 @@ Behaviours visible in the current code that are worth knowing before extending i
 - **New obstacle** — add it at the end of `TileType`, then decide each row of the obstacle table in section 3 and put the rule in the matching system. Map a sprite on `GameController`.
 - **New goal type** — `LevelGoal` only knows "collect a colour"; other goals need a new field there and a rule in `LevelProgress`.
 
-## 13. Version control
+## 14. Version control
 
 The project root is a git repository on branch `main`, with `origin` at `github.com/itu-itis25-baydarb21/PuzzleUp`. `Assets/`, `Packages/` and `ProjectSettings/` are tracked; `Library/`, `Temp/`, `Logs/`, `UserSettings/` and generated solution/project files are excluded by the standard Unity `.gitignore`.

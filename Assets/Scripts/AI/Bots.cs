@@ -26,7 +26,7 @@ namespace Match3Engine.AI
 
         public RandomBot(int seed)
         {
-            random = new System.Random(seed);
+            random = new System.Random(Seeds.Mix(seed, 11));
         }
 
         public Move ChooseMove(GameSimulation simulation, List<Move> validMoves)
@@ -42,7 +42,7 @@ namespace Match3Engine.AI
 
         protected ScoringBot(int seed)
         {
-            random = new System.Random(seed);
+            random = new System.Random(Seeds.Mix(seed, 12));
         }
 
         protected abstract float Score(GameSimulation simulation, Move move);
@@ -181,7 +181,7 @@ namespace Match3Engine.AI
             thinkingBot = strategy;
             carelessBot = new RandomBot(seed + 1);
             skill = skillLevel;
-            random = new System.Random(seed);
+            random = new System.Random(Seeds.Mix(seed, 13));
         }
 
         public Move ChooseMove(GameSimulation simulation, List<Move> validMoves)

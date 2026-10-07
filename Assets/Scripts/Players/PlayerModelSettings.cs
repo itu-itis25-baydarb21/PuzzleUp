@@ -74,6 +74,9 @@ namespace Match3Engine.Players
         [Tooltip("Added on top, scaled by how much of the goal was left. A loss with nothing done adds all of it.")]
         [Min(0f)] public float frustrationForBadLoss = 1f;
 
+        [Tooltip("How much frustration a player still carries into the next level after winning. 0 forgets everything, 1 forgets nothing.")]
+        [Range(0f, 1f)] public float frustrationKeptAfterWin = 0.5f;
+
         public float BuyChance(SpenderType spender)
         {
             switch (spender)

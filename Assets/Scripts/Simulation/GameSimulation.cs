@@ -63,7 +63,7 @@ namespace Match3Engine.Simulation
         private void BuildSystems(LevelData levelData, int seed)
         {
             level = levelData;
-            random = new System.Random(seed);
+            random = new System.Random(Seeds.Mix(seed, 10));
 
             commandSystem = new CommandSystem();
             matchSystem = new MatchSystem(Board);

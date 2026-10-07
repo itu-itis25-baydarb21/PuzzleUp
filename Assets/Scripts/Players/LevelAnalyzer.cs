@@ -57,10 +57,16 @@ namespace Match3Engine.Players
         // The same settings and seed always produce the same crowd
         public static List<PlayerProfile> Generate(PlayerModelSettings settings, int seed)
         {
-            System.Random random = new System.Random(seed);
-            List<PlayerProfile> players = new List<PlayerProfile>(settings.populationSize);
+            return Generate(settings, settings.populationSize, seed);
+        }
 
-            for (int i = 0; i < settings.populationSize; i++)
+        // The same, for a crowd of a given size
+        public static List<PlayerProfile> Generate(PlayerModelSettings settings, int count, int seed)
+        {
+            System.Random random = new System.Random(Seeds.Mix(seed, 14));
+            List<PlayerProfile> players = new List<PlayerProfile>(count);
+
+            for (int i = 0; i < count; i++)
             {
                 // Three dice added together bunch up around the middle, like real ability does
                 float bell = ((float)(random.NextDouble() + random.NextDouble() + random.NextDouble()) - 1.5f) / 0.5f;
@@ -103,11 +109,18 @@ namespace Match3Engine.Players
             return report;
         }
 
-        // One player keeps trying the level until they pass it or lose patience
+        // One player, arriving fresh, keeps trying the level until they pass it or lose patience
         public static void SimulatePlayer(LevelData level, PlayerProfile player, PlayerModelSettings settings, int playerSeed, LevelReport report)
         {
-            System.Random decisions = new System.Random(playerSeed);
             float frustration = 0f;
+            SimulatePlayer(level, player, settings, playerSeed, report, ref frustration);
+        }
+
+        // The same, for a player in the middle of a game: they bring the frustration they already
+        // have, and leave with what this level added or relieved. Returns true if they passed.
+        public static bool SimulatePlayer(LevelData level, PlayerProfile player, PlayerModelSettings settings, int playerSeed, LevelReport report, ref float frustration)
+        {
+            System.Random decisions = new System.Random(Seeds.Mix(playerSeed, 15));
 
             report.players++;
 
@@ -141,7 +154,10 @@ namespace Match3Engine.Players
                     report.attemptsByPassers += attempt;
                     if (attempt == 1) report.passedOnFirstAttempt++;
                     report.movesLeftOnWin.Add(game.Progress.MovesLeft);
-                    return;
+
+                    // Winning is a relief, but a hard-won level still leaves a mark
+                    frustration *= settings.frustrationKeptAfterWin;
+                    return true;
                 }
 
                 float progress = game.Progress.GoalProgress;
@@ -156,12 +172,13 @@ namespace Match3Engine.Players
                 if (frustration > player.patience)
                 {
                     report.quit++;
-                    return;
+                    return false;
                 }
             }
 
             // Still stuck after every allowed attempt: nobody keeps going forever
             report.quit++;
+            return false;
         }
     }
 }

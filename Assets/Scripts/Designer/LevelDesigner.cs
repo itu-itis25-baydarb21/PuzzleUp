@@ -7,6 +7,7 @@ using UnityEngine;
 using Match3Engine.AI;
 using Match3Engine.Core;
 using Match3Engine.Players;
+using Match3Engine.Studio;
 using Match3Engine.View;
 
 namespace Match3Engine.Designer
@@ -20,10 +21,12 @@ namespace Match3Engine.Designer
         [SerializeField] private BotPlayer botPlayer;
         [SerializeField] private WatchControls watchControls;
         [SerializeField] private PlayerModelSettings playerModel;
+        [SerializeField] private StudioScreen studio;
 
         [Header("Screens")]
         [SerializeField] private GameObject designerScreen;
         [SerializeField] private UnityEngine.UI.Button backButton;
+        [SerializeField] private TMP_Text titleText;
 
         [Header("Board")]
         [SerializeField] private RectTransform gridArea;
@@ -44,11 +47,17 @@ namespace Match3Engine.Designer
 
         [Header("Testing")]
         [SerializeField] private UnityEngine.UI.Button testButton;
+        [SerializeField] private TMP_Text testButtonLabel;
         [SerializeField] private UnityEngine.UI.Button watchButton;
         [SerializeField] private UnityEngine.UI.Button playerButton;
         [SerializeField] private TMP_Text playerButtonLabel;
         [SerializeField] private TMP_Text resultsText;
         [SerializeField] private TMP_Text verdictText;
+
+        [Header("Studio")]
+        [SerializeField] private UnityEngine.UI.Button publishButton;
+        [SerializeField] private TMP_Text publishButtonLabel;
+        [SerializeField] private UnityEngine.UI.Button studioButton;
 
         // The colours a level can use, in the order they are switched on
         private static readonly TileType[] palette =
@@ -95,7 +104,12 @@ namespace Match3Engine.Designer
             testButton.onClick.AddListener(TestLevel);
             watchButton.onClick.AddListener(WatchLevel);
             playerButton.onClick.AddListener(NextPlayer);
-            backButton.onClick.AddListener(Open);
+            backButton.onClick.AddListener(Show);
+            publishButton.onClick.AddListener(PublishLevel);
+            studioButton.onClick.AddListener(BackToStudio);
+
+            testButtonLabel.text = "Test level\n" + Dollars(studio.Rules.testCost);
+            publishButtonLabel.text = "Publish\n" + Dollars(studio.Rules.publishCost);
 
             for (int i = 0; i < goalIcons.Length; i++)
             {
@@ -299,6 +313,14 @@ namespace Match3Engine.Designer
         {
             if (!HasGoal()) return;
 
+            // Playtesting is not free, so a level cannot be tuned by endless trial and error
+            if (!studio.TrySpend(studio.Rules.testCost))
+            {
+                ShowMessage("Not enough money to test.");
+                return;
+            }
+            ShowMoney();
+
             StopTest();
             testRoutine = StartCoroutine(TestRoutine());
         }
@@ -391,11 +413,59 @@ namespace Match3Engine.Designer
             designerScreen.SetActive(false);
         }
 
-        // Back from watching to designing
-        public void Open()
+        // ---------- Studio ----------
+
+        private void PublishLevel()
+        {
+            if (!HasGoal()) return;
+
+            string blocker = studio.PublishBlocker();
+            if (blocker != null)
+            {
+                ShowMessage(blocker);
+                return;
+            }
+
+            StopTest();
+            studio.Publish(level);
+            ShowMessage("Design a level, then test it.");
+
+            studio.Show();
+        }
+
+        private void BackToStudio()
+        {
+            StopTest();
+            studio.Show();
+        }
+
+        private void ShowMoney()
+        {
+            titleText.text = "Level Designer   " + Dollars(studio.Money);
+        }
+
+        private static string Dollars(float amount)
+        {
+            return "$" + amount.ToString("0.#", CultureInfo.InvariantCulture);
+        }
+
+        // ---------- Showing and hiding this screen ----------
+
+        // Opens the designer, from the studio or back from watching
+        public void Show()
         {
             botPlayer.enabled = false;
             designerScreen.SetActive(true);
+
+            // The grid is sized from its area, which only has a size once the screen is showing
+            Canvas.ForceUpdateCanvases();
+            RebuildGrid();
+            ShowMoney();
+        }
+
+        public void Hide()
+        {
+            designerScreen.SetActive(false);
         }
     }
 }
