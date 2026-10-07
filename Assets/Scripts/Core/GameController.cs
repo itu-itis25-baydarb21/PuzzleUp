@@ -23,6 +23,9 @@ namespace Match3Engine.Core
         private SpawnSystem spawnSystem;
         private PowerUpSystem powerUpSystem; 
 
+        // True from the moment a swap starts until the board has fully settled
+        private bool isBusy;
+
         [Header("Board Settings")]
         public int boardWidth = 8;
         public int boardHeight = 8;
@@ -63,12 +66,18 @@ namespace Match3Engine.Core
 
         public void ProcessPlayerSwap(Vector2Int posA, Vector2Int posB)
         {
+            // Ignoring swipes while the board is still animating, or ones that leave the board
+            if (isBusy) return;
+            if (!boardModel.IsValidPosition(posA.x, posA.y) || !boardModel.IsValidPosition(posB.x, posB.y)) return;
+
             // Starting my timeline routine so animations have time to play
             StartCoroutine(SwapAndProcessRoutine(posA, posB));
         }
 
         private IEnumerator SwapAndProcessRoutine(Vector2Int posA, Vector2Int posB)
         {
+            isBusy = true;
+
             boardView.SwapVisuals(posA, posB);
 
             ICommand swapCmd = new SwapCommand(boardModel, posA, posB);
@@ -93,27 +102,11 @@ namespace Match3Engine.Core
                 MatchResult powerUpResult = new MatchResult();
                 powerUpResult.matchedTiles = explosionArea;
 
-                ICommand destroyCmd = new DestroyCommand(boardModel, powerUpResult);
-                commandSystem.EnqueueCommand(destroyCmd);
-                commandSystem.ProcessNextCommand();
-                boardView.SyncVisualsWithData(GetSpriteForType);
-                yield return new WaitForSeconds(0.2f);
+                yield return DestroyAndRefillRoutine(powerUpResult);
+                yield return RunGameplayPipelineRoutine(new Vector2Int(-1, -1), new Vector2Int(-1, -1));
 
-                ICommand gravityCmd = new GravityCommand(gravitySystem);
-                commandSystem.EnqueueCommand(gravityCmd);
-                commandSystem.ProcessNextCommand();
-                boardView.SyncVisualsWithData(GetSpriteForType);
-                yield return new WaitForSeconds(0.2f);
-
-                ICommand spawnCmd = new SpawnCommand(spawnSystem);
-                commandSystem.EnqueueCommand(spawnCmd);
-                commandSystem.ProcessNextCommand();
-                boardView.SyncVisualsWithData(GetSpriteForType);
-                yield return new WaitForSeconds(0.3f);
-
-                StartCoroutine(RunGameplayPipelineRoutine(new Vector2Int(-1, -1), new Vector2Int(-1, -1)));
-
-                yield break; 
+                isBusy = false;
+                yield break;
             }
 
             MatchResult matchResult = matchSystem.FindMatches(posA, posB);
@@ -126,11 +119,16 @@ namespace Match3Engine.Core
                 commandSystem.EnqueueCommand(revertCmd);
                 commandSystem.ProcessNextCommand();
 
+                yield return new WaitForSeconds(0.25f);
+
+                isBusy = false;
                 yield break;
             }
 
             // Passing the exact touch coordinates into my pipeline so it knows where to spawn specials!
-            StartCoroutine(RunGameplayPipelineRoutine(posA, posB));
+            yield return RunGameplayPipelineRoutine(posA, posB);
+
+            isBusy = false;
         }
 
         private IEnumerator RunGameplayPipelineRoutine(Vector2Int initialSwapA, Vector2Int initialSwapB)
@@ -152,29 +150,37 @@ namespace Match3Engine.Core
                 {
                     cascadeHappened = true;
 
-                    ICommand destroyCmd = new DestroyCommand(boardModel, matchResult);
-                    commandSystem.EnqueueCommand(destroyCmd);
-                    commandSystem.ProcessNextCommand();
-                    boardView.SyncVisualsWithData(GetSpriteForType);
-                    yield return new WaitForSeconds(0.2f);
-
-                    ICommand gravityCmd = new GravityCommand(gravitySystem);
-                    commandSystem.EnqueueCommand(gravityCmd);
-                    commandSystem.ProcessNextCommand();
-                    boardView.SyncVisualsWithData(GetSpriteForType);
-                    yield return new WaitForSeconds(0.2f);
-
-                    ICommand spawnCmd = new SpawnCommand(spawnSystem);
-                    commandSystem.EnqueueCommand(spawnCmd);
-                    commandSystem.ProcessNextCommand();
-                    boardView.SyncVisualsWithData(GetSpriteForType);
-                    yield return new WaitForSeconds(0.3f);
+                    yield return DestroyAndRefillRoutine(matchResult);
 
                     // Resetting the swap coordinates for any chain reactions (cascades)
                     currentSwapA = new Vector2Int(-1, -1);
                     currentSwapB = new Vector2Int(-1, -1);
                 }
             }
+        }
+
+        // Clears the given tiles, then lets the survivors and the new tiles fall into place together
+        private IEnumerator DestroyAndRefillRoutine(MatchResult result)
+        {
+            ICommand destroyCmd = new DestroyCommand(boardModel, result);
+            commandSystem.EnqueueCommand(destroyCmd);
+            commandSystem.ProcessNextCommand();
+            boardView.SyncVisualsWithData(GetSpriteForType);
+            yield return new WaitForSeconds(0.2f);
+
+            ICommand gravityCmd = new GravityCommand(gravitySystem);
+            commandSystem.EnqueueCommand(gravityCmd);
+            commandSystem.ProcessNextCommand();
+            boardView.DropTiles(gravitySystem.LastMoves);
+
+            ICommand spawnCmd = new SpawnCommand(spawnSystem);
+            commandSystem.EnqueueCommand(spawnCmd);
+            commandSystem.ProcessNextCommand();
+            boardView.DropNewTiles(spawnSystem.LastSpawned, GetSpriteForType);
+
+            // Waiting for every tile to land before I look for the next cascade
+            yield return new WaitUntil(() => !boardView.IsDropping);
+            yield return new WaitForSeconds(0.1f);
         }
     }
 }

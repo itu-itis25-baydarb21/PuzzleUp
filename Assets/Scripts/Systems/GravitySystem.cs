@@ -1,10 +1,28 @@
+using System.Collections.Generic;
+using UnityEngine;
 using Match3Engine.Core;
 
 namespace Match3Engine.Systems
 {
+    // A single tile falling from one slot to another in the same column
+    public struct TileMove
+    {
+        public Vector2Int from;
+        public Vector2Int to;
+
+        public TileMove(Vector2Int fromPos, Vector2Int toPos)
+        {
+            from = fromPos;
+            to = toPos;
+        }
+    }
+
     public class GravitySystem
     {
         private BoardModel board;
+
+        // Every fall from my last gravity pass, in the order it happened, so the view can replay it
+        public List<TileMove> LastMoves { get; private set; } = new List<TileMove>();
 
         public GravitySystem(BoardModel boardModel)
         {
@@ -14,6 +32,8 @@ namespace Match3Engine.Systems
 
         public void ApplyGravity()
         {
+            LastMoves.Clear();
+
             // I'm going through each column from bottom to top
             for (int x = 0; x < board.Width; x++)
             {
@@ -30,6 +50,7 @@ namespace Match3Engine.Systems
                                 // Move the tile down and clear its old spot
                                 board.SetTile(x, y, tileAbove);
                                 board.SetTile(x, aboveY, TileType.None);
+                                LastMoves.Add(new TileMove(new Vector2Int(x, aboveY), new Vector2Int(x, y)));
                                 break;
                             }
                         }
