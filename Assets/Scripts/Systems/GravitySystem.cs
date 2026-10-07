@@ -45,6 +45,10 @@ namespace Match3Engine.Systems
                         for (int aboveY = y + 1; aboveY < board.Height; aboveY++)
                         {
                             TileType tileAbove = board.GetTile(x, aboveY);
+
+                            // A hole is not part of the board, so I look straight past it
+                            if (tileAbove == TileType.Hole) continue;
+
                             if (tileAbove != TileType.None)
                             {
                                 // Move the tile down and clear its old spot

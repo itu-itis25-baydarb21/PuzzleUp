@@ -45,14 +45,18 @@ namespace Match3Engine.Systems
             }
         }
 
-        // Replaces the whole board with random tiles, never placing a third tile in a row.
+        // Deals random tiles over the whole board, never placing a third tile in a row.
         // Used for the starting board so the level does not begin with free matches.
+        // Crates and holes already on the board are left where they are.
         public void FillWithoutMatches()
         {
             for (int x = 0; x < board.Width; x++)
             {
                 for (int y = 0; y < board.Height; y++)
                 {
+                    TileType current = board.GetTile(x, y);
+                    if (current == TileType.Crate || current == TileType.Hole) continue;
+
                     candidates.Clear();
 
                     foreach (TileType type in availableTypes)

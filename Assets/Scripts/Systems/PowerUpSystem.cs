@@ -66,6 +66,9 @@ namespace Match3Engine.Systems
                 }
             }
 
+            // Holes are not part of the board, so nothing there can be destroyed
+            area.RemoveWhere(slot => board.GetTile(slot.x, slot.y) == TileType.Hole);
+
             return area;
         }
     }

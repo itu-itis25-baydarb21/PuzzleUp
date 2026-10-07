@@ -34,7 +34,21 @@ namespace Match3Engine.Simulation
             Progress = new LevelProgress(levelData.moveLimit, levelData.goals);
 
             BuildSystems(levelData, seed);
+            PlaceObstacles(levelData);
             FillStartingBoard();
+        }
+
+        private void PlaceObstacles(LevelData levelData)
+        {
+            if (levelData.obstacles == null) return;
+
+            foreach (LevelObstacle obstacle in levelData.obstacles)
+            {
+                // Anything else in this list is ignored; slots off the board are ignored by SetTile
+                if (obstacle.type != TileType.Crate && obstacle.type != TileType.Hole) continue;
+
+                Board.SetTile(obstacle.position.x, obstacle.position.y, obstacle.type);
+            }
         }
 
         // Used by Clone: takes over a board and progress that already exist
@@ -227,11 +241,21 @@ namespace Match3Engine.Simulation
         // Mixes the tiles already on the board until there is a move again
         private void Shuffle()
         {
+            // Crates and holes stay where they are; everything else trades places
+            List<Vector2Int> slots = new List<Vector2Int>();
             List<TileType> tiles = new List<TileType>();
 
             for (int x = 0; x < Board.Width; x++)
+            {
                 for (int y = 0; y < Board.Height; y++)
-                    tiles.Add(Board.GetTile(x, y));
+                {
+                    TileType type = Board.GetTile(x, y);
+                    if (type == TileType.Crate || type == TileType.Hole) continue;
+
+                    slots.Add(new Vector2Int(x, y));
+                    tiles.Add(type);
+                }
+            }
 
             for (int attempt = 0; attempt < maxShuffleAttempts; attempt++)
             {
@@ -243,10 +267,8 @@ namespace Match3Engine.Simulation
                     tiles[j] = swapped;
                 }
 
-                int index = 0;
-                for (int x = 0; x < Board.Width; x++)
-                    for (int y = 0; y < Board.Height; y++)
-                        Board.SetTile(x, y, tiles[index++]);
+                for (int i = 0; i < slots.Count; i++)
+                    Board.SetTile(slots[i].x, slots[i].y, tiles[i]);
 
                 bool hasMatches = matchSystem.FindMatches(noSwap, noSwap).matchedTiles.Count > 0;
                 if (!hasMatches && moveFinder.HasValidMove()) return;

@@ -8,7 +8,7 @@ A match-3 puzzle prototype built in Unity. The code lives in a single namespace 
 | Render pipeline | Built-in, 2D feature set |
 | Input | New Input System package (`com.unity.inputsystem` 1.18.0), polled directly |
 | Assemblies | `Match3Engine` (all game code, `Assets/Scripts`), `Match3Engine.Editor` (`Assets/Editor`) and `Match3Engine.Tests.EditMode` (`Assets/Tests/EditMode`) |
-| Tests | 14 edit-mode tests that run whole games with no scene |
+| Tests | 23 edit-mode tests that run whole games with no scene |
 | Scene | `Assets/Scenes/SampleScene.unity` (the only scene in the build) |
 
 ## 1. Project layout
@@ -17,13 +17,13 @@ A match-3 puzzle prototype built in Unity. The code lives in a single namespace 
 Assets/
 ├── Scenes/SampleScene.unity      Single gameplay scene
 ├── Prefabs/TilePrefab.prefab     One tile: SpriteRenderer + TileView
-├── Sprites/                      Two sliced sprite sheets (colour tiles, power-ups)
+├── Sprites/                      Two sliced sprite sheets (colour tiles, power-ups) and Crate.png (placeholder)
 ├── Scripts/
 │   ├── Match3Engine.asmdef       Assembly for all game code
 │   ├── Core/                     Data model + on-screen controller
-│   │   ├── TileType.cs           Enum of colours and power-ups
+│   │   ├── TileType.cs           Enum of colours, power-ups and obstacles
 │   │   ├── BoardModel.cs         The grid (pure C#)
-│   │   ├── LevelData.cs          ScriptableObject: board size, colours, move limit, goals
+│   │   ├── LevelData.cs          ScriptableObject: board size, colours, obstacles, move limit, goals
 │   │   ├── LevelProgress.cs      Moves left, goal progress, won/lost (pure C#)
 │   │   └── GameController.cs     MonoBehaviour that animates one level on screen
 │   ├── Commands/                 Board mutations as ICommand objects
@@ -52,8 +52,8 @@ Assets/
 │       ├── Bots.cs               IBot, the four strategies, SkillBot, BotFactory
 │       └── BatchRunner.cs        Plays a level many times and collects the results
 ├── Editor/BotBatchMenu.cs        Menu command: Puzzle Up > Run Bot Batch
-├── Tests/EditMode/               GameSimulationTests, BotTests + test assembly definition
-├── Levels/Level_01.asset         The level the scene loads
+├── Tests/EditMode/               GameSimulationTests, BotTests, ObstacleTests + test assembly definition
+├── Levels/                       Level_01 (plain board) and Level_02 (crates and holes; the one the scene loads)
 ├── TextMesh Pro/                 TMP essential resources (imported package content)
 ├── InputSystem_Actions.inputactions   Unity default asset; not used by game code
 └── _Recovery/0.unity             Unity crash-recovery scene, not part of the game
@@ -105,6 +105,21 @@ One enum covers both tile families, and their order matters:
 - `None` — empty cell
 - `Red, Blue, Green, Yellow, Purple, Pink` — base colours. `MatchSystem.IsBaseColor` relies on these being the contiguous range `Red..Pink`.
 - `RocketHorizontal, RocketVertical, TNT, ColorBomb` — power-ups
+- `Crate, Hole` — obstacles. New values are added at the end so the numbers saved in levels and scenes never shift.
+
+### Obstacles
+
+| | Crate | Hole |
+|---|---|---|
+| What it is | A box sitting in a slot | A slot that is not part of the board |
+| Swapped by the player | No | No |
+| Takes part in matches | No | No |
+| Gravity | Falls like a tile | Never moves; tiles and crates fall straight past it |
+| Destroyed by | A match directly next to it (left, right, above, below), or a power-up explosion that covers it | Nothing |
+| Can be a goal | Yes — a `LevelGoal` with type `Crate` | No |
+| Spawned during play | No | No |
+
+Where each rule lives: `MoveFinder.CanBeSwapped`, `MatchSystem.AddAdjacentCrates`, the hole skip in `GravitySystem.ApplyGravity`, the hole filter at the end of `PowerUpSystem.GetExplosionArea`, and `SpawnSystem.FillWithoutMatches` and `GameSimulation.Shuffle`, which both leave crates and holes where they are.
 
 ### `BoardModel`
 A `TileType[width, height]` grid with bounds-safe accessors. `GetTile` returns `None` for out-of-range coordinates and `SetTile` silently ignores them, so systems can probe neighbours without their own bounds checks.
@@ -112,7 +127,7 @@ A `TileType[width, height]` grid with bounds-safe accessors. `GetTile` returns `
 Coordinates are `(x, y)` with `(0, 0)` at the **bottom-left**; `y` increases upward. Grid coordinates equal world coordinates — tile `(x, y)` is drawn at world position `(x, y)` with one unit per cell. Input and the camera both depend on this.
 
 ### `LevelData`
-A `ScriptableObject` (create via **Assets → Create → Puzzle Up → Level**) holding everything that defines a level: `width`, `height`, `availableTileTypes`, `moveLimit`, and `goals` — a list of `LevelGoal { type, amount }`, each meaning "destroy this many tiles of this colour".
+A `ScriptableObject` (create via **Assets → Create → Puzzle Up → Level**) holding everything that defines a level: `width`, `height`, `availableTileTypes`, `obstacles` (a list of `LevelObstacle { position, type }` placing crates and holes; every other slot gets a random tile), `moveLimit`, and `goals` — a list of `LevelGoal { type, amount }`, each meaning "destroy this many tiles of this colour".
 
 ### `LevelProgress`
 Plain C# state for one attempt: `MovesLeft`, the remaining count per goal colour, and `State` (`Playing`, `Won`, `Lost`).
@@ -299,13 +314,15 @@ Sits on the `HudCanvas`. `Refresh(progress)` writes the moves left and each goal
 | `Board` | Transform only | Parent for instantiated tiles |
 | `HudCanvas` | Canvas, CanvasScaler, GraphicRaycaster, `LevelHud` | Screen Space Overlay, scales with screen size (1080×1920 reference). Children: `MovesText`, `GoalsText`, `ResultPanel` → `ResultText` |
 
-`GameController` points at `Assets/Levels/Level_01.asset`:
+`GameController` points at `Assets/Levels/Level_02.asset`:
 
-- Board is **8 × 8**, 20 moves.
-- `availableTileTypes`: Red, Green, Blue, Yellow, Pink. `Purple` exists in the enum but is not spawned and has no sprite.
-- Goals: 20 Red and 20 Blue.
+- Board is **8 × 8**, 25 moves, five colours (Red, Green, Blue, Yellow, Pink). `Purple` exists in the enum but is not spawned and has no sprite.
+- Obstacles: a hole in each corner, and eight crates in a 4 × 2 block near the bottom.
+- Goals: 8 Crates and 15 Blue.
 
-`tileSprites` on `GameController` has nine mappings — the five colours above plus the four power-ups.
+`Level_01` is the earlier plain level: 8 × 8, 20 moves, 20 Red and 20 Blue, no obstacles.
+
+`tileSprites` on `GameController` has ten mappings — the five colours, the four power-ups and the crate. A hole has no sprite; it shows as a gap.
 
 ## 9. Known limitations
 
@@ -317,6 +334,9 @@ Behaviours visible in the current code that are worth knowing before extending i
 4. **A shuffle is not animated.** The board is simply repainted in its new arrangement.
 5. **Bots only run from an editor menu.** Nothing in the game itself starts a batch or shows its results yet, and no bot plays on the animated board.
 6. **The look-ahead bot is slow** compared with the others — about 14 seconds per 1,000 games on `Level_01`, against 1 to 3 seconds.
+7. **Crates fall; there is no fixed blocker.** An obstacle that stays put and stops tiles falling would need tiles to slide in diagonally underneath it, which gravity does not do.
+8. **Obstacles are placed by typing coordinates** into the level asset's `obstacles` list. There is no grid to paint them on.
+9. **The crate sprite is a generated placeholder**, and the board has no background, so a hole is only visible as a missing tile.
 
 ## 10. Extension points
 
@@ -325,6 +345,7 @@ Behaviours visible in the current code that are worth knowing before extending i
 - **New board action** — implement `ICommand`, run it from `GameSimulation`, and report its effect in `CascadeStep` so the view can show it.
 - **New bot** — implement `IBot` (or extend `ScoringBot` and write only `Score`), then add it to `BotStrategy` and `BotFactory`.
 - **New level** — create a `LevelData` asset and assign it to `GameController.level`.
+- **New obstacle** — add it at the end of `TileType`, then decide each row of the obstacle table in section 3 and put the rule in the matching system. Map a sprite on `GameController`.
 - **New goal type** — `LevelGoal` only knows "collect a colour"; other goals need a new field there and a rule in `LevelProgress`.
 
 ## 11. Version control

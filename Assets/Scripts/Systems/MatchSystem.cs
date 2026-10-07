@@ -178,7 +178,36 @@ namespace Match3Engine.Systems
                     result.specialsToCreate[spawnPos] = specialType;
                 }
             }
+
+            AddAdjacentCrates(result);
             return result;
+        }
+
+        private static readonly Vector2Int[] neighbours =
+        {
+            Vector2Int.left, Vector2Int.right, Vector2Int.up, Vector2Int.down
+        };
+
+        // A match also breaks every crate standing right next to it
+        private void AddAdjacentCrates(MatchResult result)
+        {
+            List<Vector2Int> crates = null;
+
+            foreach (Vector2Int pos in result.matchedTiles)
+            {
+                foreach (Vector2Int direction in neighbours)
+                {
+                    Vector2Int beside = pos + direction;
+
+                    if (board.GetTile(beside.x, beside.y) == TileType.Crate)
+                    {
+                        if (crates == null) crates = new List<Vector2Int>();
+                        crates.Add(beside);
+                    }
+                }
+            }
+
+            if (crates != null) result.matchedTiles.UnionWith(crates);
         }
     }
 }

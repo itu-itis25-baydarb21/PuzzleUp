@@ -41,7 +41,7 @@ namespace Match3Engine.Systems
             TileType typeA = board.GetTile(a.x, a.y);
             TileType typeB = board.GetTile(b.x, b.y);
 
-            if (typeA == TileType.None || typeB == TileType.None) return false;
+            if (!CanBeSwapped(typeA) || !CanBeSwapped(typeB)) return false;
             if (powerUpSystem.IsPowerUp(typeA) || powerUpSystem.IsPowerUp(typeB)) return true;
             if (typeA == typeB) return false;
 
@@ -55,6 +55,12 @@ namespace Match3Engine.Systems
             board.SetTile(b.x, b.y, typeB);
 
             return createsMatch;
+        }
+
+        // Colours and power-ups can be swapped. Empty slots, crates and holes cannot.
+        private static bool CanBeSwapped(TileType type)
+        {
+            return type != TileType.None && type != TileType.Crate && type != TileType.Hole;
         }
 
         // Every valid swap on the board, each listed once
