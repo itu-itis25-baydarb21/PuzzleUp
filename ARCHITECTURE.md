@@ -120,9 +120,8 @@ Inspector-configured: board size, `availableTileTypes` (what can spawn), a `Boar
 flowchart TD
     A[Swipe detected] --> B["SwapVisuals + SwapCommand<br/>wait 0.25 s"]
     B --> C{Either tile a power-up?}
-    C -- yes --> D["PowerUpSystem.GetExplosionArea<br/>→ DestroyCommand"]
-    D --> E[Gravity → Spawn]
-    E --> L
+    C -- yes --> D["PowerUpSystem.GetExplosionArea<br/>→ DestroyAndRefillRoutine"]
+    D --> L
     C -- no --> F["MatchSystem.FindMatches(posA, posB)"]
     F --> G{Any match?}
     G -- no --> H["Swap back<br/>(visuals + SwapCommand)"]
@@ -131,11 +130,15 @@ flowchart TD
     subgraph L [RunGameplayPipelineRoutine — cascade loop]
         direction TB
         M[FindMatches] --> N{Matches?}
-        N -- yes --> O["DestroyCommand → sync, 0.2 s<br/>GravityCommand → sync, 0.2 s<br/>SpawnCommand → sync, 0.3 s"]
+        N -- yes --> O["DestroyAndRefillRoutine:<br/>DestroyCommand → sync, 0.2 s<br/>GravityCommand + SpawnCommand → tiles fall<br/>wait until all have landed"]
         O --> M
         N -- no --> P[Turn ends]
     end
 ```
+
+`DestroyAndRefillRoutine` is shared by the match and power-up paths. After clearing, it runs gravity and spawn back to back on the model and hands their results (`GravitySystem.LastMoves`, `SpawnSystem.LastSpawned`) to the view, so surviving tiles and new tiles fall at the same time. It then waits on `BoardView.IsDropping` rather than a fixed delay.
+
+`GameController` holds an `isBusy` flag for the whole turn: `ProcessPlayerSwap` ignores swipes while it is set, and also rejects swaps where either cell is off the board.
 
 The cascade loop runs until a full pass finds no matches. The swap positions are only passed on the **first** pass; later passes use `(-1, -1)` so that power-ups created by chain reactions are placed by shape rather than by player touch.
 
@@ -189,10 +192,10 @@ Power-up tiles are never part of a match (`IsBaseColor` filters them out).
 Power-ups are activated **only by swapping them**. `GameController` unions the areas of both swapped tiles and wraps them in a `MatchResult` so the regular `DestroyCommand` can be reused.
 
 ### `GravitySystem`
-For each column, bottom to top: for every empty cell, pull down the nearest non-empty tile above it. Operates in place on the model.
+For each column, bottom to top: for every empty cell, pull down the nearest non-empty tile above it. Operates in place on the model and records each fall as a `TileMove { from, to }` in `LastMoves`, in the order it happened.
 
 ### `SpawnSystem`
-Fills every remaining `None` cell with a uniformly random entry from `availableTileTypes` (uses `UnityEngine.Random`, unseeded).
+Fills every remaining `None` cell with a uniformly random entry from `availableTileTypes` (uses `UnityEngine.Random`, unseeded) and records the filled cells in `LastSpawned`, column by column from bottom to top.
 
 ### `InputSystem`
 Polls `Mouse.current` and `Touchscreen.current` each frame. Press and release positions are converted to world space; if the drag is longer than `0.5` units, the start position is rounded to a grid cell and the dominant axis of the drag picks the neighbour. Result: `gameController.ProcessPlayerSwap(posA, posB)`.
@@ -202,15 +205,21 @@ Note the class shares its name with the `UnityEngine.InputSystem` namespace; it 
 ## 6. View
 
 ### `BoardView`
-- `InitializeBoard(model)` — instantiates one `TilePrefab` per cell under the `Board` transform and stores them in a `TileView[,]` that mirrors the model.
-- `SyncVisualsWithData(getSprite)` — full repaint: every `TileView` gets the sprite for the model's type at its slot. Called after each destroy / gravity / spawn step.
+- `InitializeBoard(model)` — instantiates one `TilePrefab` per cell under the `Board` transform and stores them in a `TileView[,]` that mirrors the model. Also creates a `SpriteMask` the size of the board at runtime and sets every tile to `VisibleInsideMask`, so tiles waiting above the board are hidden until they fall into it.
+- `SyncVisualsWithData(getSprite)` — full repaint: every `TileView` gets the sprite for the model's type at its slot. Called for the initial fill and after each destroy step.
+- `DropTiles(moves)` — replays the gravity pass: for each `TileMove`, the falling view and the empty (sprite-less) view below it exchange slots in the array, and the falling view drops to its new cell.
+- `DropNewTiles(spawned, getSprite)` — reuses the empty views left at the top of each column: gives each its new sprite, stacks it above the board (`y = Height + n`), and drops it into its cell.
+- `IsDropping` — true while any tile is still falling.
 - `SwapVisuals(a, b)` — exchanges two `TileView` references and retargets them, which is what produces the swap animation.
 - `CenterAndScaleCamera(w, h)` — centres the orthographic camera on the board and sizes it to fit with 2 units of padding, whichever of width or height is tighter.
 
 ### `TileView`
-Holds a `SpriteRenderer`. `UpdateVisuals` assigns the sprite and rescales it to fit 0.95 of a cell regardless of source size. `Update` lerps the transform toward `targetPosition` every frame.
+Holds a `SpriteRenderer`. `UpdateVisuals` assigns the sprite and rescales it to fit 0.95 of a cell regardless of source size. It has two ways of moving:
 
-Because `SyncVisualsWithData` repaints sprites in place, **only the swap is a real movement animation**. Clearing, falling and spawning appear as sprite changes at fixed slots, paced by the `WaitForSeconds` delays in `GameController`.
+- `MoveToPosition` — `Update` lerps toward the target every frame. Used for swaps.
+- `DropToPosition` — falls straight down with constant acceleration (50 units/s², capped at 25 units/s) and stops exactly on the target. Used for gravity and spawns.
+
+`SnapToPosition` teleports with no animation. Views are never destroyed or instantiated after start-up: a cleared tile's view keeps its place in the array with no sprite and is reused for the next spawn. Clearing itself is still an instant sprite removal.
 
 ## 7. Scene wiring
 
@@ -232,15 +241,13 @@ Scene values on `GameController`:
 
 Behaviours visible in the current code that are worth knowing before extending it:
 
-1. **No input lock.** `ProcessPlayerSwap` starts a new coroutine on every swipe, so a swipe during a running cascade starts a second pipeline over the same board.
-2. **Out-of-board swipes throw.** `InputSystem` does not check that either cell is on the board, and `BoardView.SwapVisuals` indexes its array directly, so swiping from or toward outside the grid raises `IndexOutOfRangeException`. Non-adjacent swaps cannot happen, but off-board ones can.
-3. **The starting board can contain matches.** Initial fill is purely random. Since `FindMatches` scans the entire board, a pre-existing match makes *any* first swap count as valid.
-4. **Swap validity is board-wide.** For the same reason, a swap is accepted if a match exists anywhere, not only if the swapped tiles took part in one.
-5. **Power-ups do not chain.** A power-up caught in another explosion is simply removed without firing.
-6. **ColorBomb + power-up** destroys only tiles of that power-up's type, since the swapped tile's type is used as the target "colour".
-7. **No deadlock detection or shuffle** when no moves remain.
-8. **No game layer yet** — no score, move counter, goals, levels, UI, audio or persistence. `Assets/Levels` and `Assets/Scripts/AI` are empty.
-9. **No tests**, although the Test Framework package is installed. The pure-C# model and systems are testable as they stand, apart from `SpawnSystem`'s use of `UnityEngine.Random`.
+1. **The starting board can contain matches.** Initial fill is purely random. Since `FindMatches` scans the entire board, a pre-existing match makes *any* first swap count as valid.
+2. **Swap validity is board-wide.** For the same reason, a swap is accepted if a match exists anywhere, not only if the swapped tiles took part in one.
+3. **Power-ups do not chain.** A power-up caught in another explosion is simply removed without firing.
+4. **ColorBomb + power-up** destroys only tiles of that power-up's type, since the swapped tile's type is used as the target "colour".
+5. **No deadlock detection or shuffle** when no moves remain.
+6. **No game layer yet** — no score, move counter, goals, levels, UI, audio or persistence. `Assets/Levels` and `Assets/Scripts/AI` are empty.
+7. **No tests**, although the Test Framework package is installed. The pure-C# model and systems are testable as they stand, apart from `SpawnSystem`'s use of `UnityEngine.Random`.
 
 ## 9. Extension points
 
@@ -248,7 +255,6 @@ Behaviours visible in the current code that are worth knowing before extending i
 - **New power-up** — add the enum value after the colours, extend `PowerUpSystem.IsPowerUp` / `GetExplosionArea`, add a creation rule in `MatchSystem`, and map a sprite.
 - **New board action** — implement `ICommand` and run it from `GameController` through `CommandSystem`.
 - **Levels** — `GameController` already takes board size and tile set as data; a level asset would supply those in place of Inspector values.
-- **Falling animations** — would require `BoardView` to move `TileView` references along with the model (as `SwapVisuals` does) instead of repainting slots.
 
 ## 10. Version control
 

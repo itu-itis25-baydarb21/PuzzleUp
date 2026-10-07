@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using Match3Engine.Core;
 
@@ -8,6 +9,9 @@ namespace Match3Engine.Systems
         private BoardModel board;
         private TileType[] availableTypes;
 
+        // The slots I filled in my last spawn pass, column by column from bottom to top
+        public List<Vector2Int> LastSpawned { get; private set; } = new List<Vector2Int>();
+
         public SpawnSystem(BoardModel boardModel, TileType[] types)
         {
             // Hooking up my board and the tile types allowed in this level
@@ -17,6 +21,8 @@ namespace Match3Engine.Systems
 
         public void SpawnTiles()
         {
+            LastSpawned.Clear();
+
             // I need to fill any empty spots left behind by gravity
             for (int x = 0; x < board.Width; x++)
             {
@@ -27,6 +33,7 @@ namespace Match3Engine.Systems
                         // Picking a random tile type from my available list
                         TileType randomType = availableTypes[Random.Range(0, availableTypes.Length)];
                         board.SetTile(x, y, randomType);
+                        LastSpawned.Add(new Vector2Int(x, y));
                     }
                 }
             }
