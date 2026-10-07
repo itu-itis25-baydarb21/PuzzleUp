@@ -25,6 +25,23 @@ namespace Match3Engine.Systems
             return type >= TileType.Red && type <= TileType.Pink;
         }
 
+        // Quick local check: is this tile part of a line of 3 or more?
+        public bool HasMatchAt(Vector2Int pos)
+        {
+            TileType type = board.GetTile(pos.x, pos.y);
+            if (!IsBaseColor(type)) return false;
+
+            int horizontal = 1;
+            for (int x = pos.x - 1; board.GetTile(x, pos.y) == type; x--) horizontal++;
+            for (int x = pos.x + 1; board.GetTile(x, pos.y) == type; x++) horizontal++;
+            if (horizontal >= 3) return true;
+
+            int vertical = 1;
+            for (int y = pos.y - 1; board.GetTile(pos.x, y) == type; y--) vertical++;
+            for (int y = pos.y + 1; board.GetTile(pos.x, y) == type; y++) vertical++;
+            return vertical >= 3;
+        }
+
         public MatchResult FindMatches(Vector2Int swapPosA, Vector2Int swapPosB)
         {
             MatchResult result = new MatchResult();
@@ -161,7 +178,36 @@ namespace Match3Engine.Systems
                     result.specialsToCreate[spawnPos] = specialType;
                 }
             }
+
+            AddAdjacentCrates(result);
             return result;
+        }
+
+        private static readonly Vector2Int[] neighbours =
+        {
+            Vector2Int.left, Vector2Int.right, Vector2Int.up, Vector2Int.down
+        };
+
+        // A match also breaks every crate standing right next to it
+        private void AddAdjacentCrates(MatchResult result)
+        {
+            List<Vector2Int> crates = null;
+
+            foreach (Vector2Int pos in result.matchedTiles)
+            {
+                foreach (Vector2Int direction in neighbours)
+                {
+                    Vector2Int beside = pos + direction;
+
+                    if (board.GetTile(beside.x, beside.y) == TileType.Crate)
+                    {
+                        if (crates == null) crates = new List<Vector2Int>();
+                        crates.Add(beside);
+                    }
+                }
+            }
+
+            if (crates != null) result.matchedTiles.UnionWith(crates);
         }
     }
 }

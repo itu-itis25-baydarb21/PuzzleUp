@@ -1,0 +1,18 @@
+{
+    "name": "Match3Engine.Editor",
+    "rootNamespace": "Match3Engine.EditorTools",
+    "references": [
+        "Match3Engine"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

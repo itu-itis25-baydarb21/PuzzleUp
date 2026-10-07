@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using UnityEngine;
 using Match3Engine.Core;
+using Match3Engine.Simulation;
 using Match3Engine.Systems;
 
 namespace Match3Engine.View
@@ -15,9 +16,17 @@ namespace Match3Engine.View
         // This is my visual grid mirroring the data grid structure
         private TileView[,] tileViews;
         private BoardModel dataModel;
+        private GameObject boardMask;
 
         public void InitializeBoard(BoardModel model)
         {
+            // Clearing out the tiles and mask of the level that was shown before, if any
+            if (tileViews != null)
+            {
+                foreach (TileView oldView in tileViews) Destroy(oldView.gameObject);
+            }
+            if (boardMask != null) Destroy(boardMask);
+
             dataModel = model;
             tileViews = new TileView[model.Width, model.Height];
 
@@ -38,6 +47,12 @@ namespace Match3Engine.View
             }
         }
 
+        // Points my existing tiles at a different data grid of the same size, for a restarted level
+        public void SetBoard(BoardModel model)
+        {
+            dataModel = model;
+        }
+
         // A mask the exact size of the board, so tiles are only drawn while they are inside it
         private void CreateBoardMask(int width, int height)
         {
@@ -53,6 +68,8 @@ namespace Match3Engine.View
             maskObject.transform.position = new Vector3((width - 1) / 2f, (height - 1) / 2f, 0f);
             maskObject.transform.localScale = new Vector3(width, height, 1f);
             maskObject.AddComponent<SpriteMask>().sprite = maskSprite;
+
+            boardMask = maskObject;
         }
 
         // True while any tile is still falling
@@ -85,17 +102,35 @@ namespace Match3Engine.View
             }
         }
 
+        // Destroyed tiles just lose their sprite. Their views stay in the grid to be reused.
+        public void ClearTiles(List<PlacedTile> destroyedTiles)
+        {
+            foreach (PlacedTile destroyed in destroyedTiles)
+            {
+                tileViews[destroyed.position.x, destroyed.position.y].UpdateVisuals(TileType.None, null);
+            }
+        }
+
+        // Showing a tile that appears in place, like a power-up created by a match
+        public void PlaceTiles(List<PlacedTile> placedTiles, System.Func<TileType, Sprite> getSpriteFunc)
+        {
+            foreach (PlacedTile placed in placedTiles)
+            {
+                tileViews[placed.position.x, placed.position.y].UpdateVisuals(placed.type, getSpriteFunc(placed.type));
+            }
+        }
+
         // Newly spawned tiles start stacked above the board and fall into their slots
-        public void DropNewTiles(List<Vector2Int> spawnedSlots, System.Func<TileType, Sprite> getSpriteFunc)
+        public void DropNewTiles(List<PlacedTile> spawnedTiles, System.Func<TileType, Sprite> getSpriteFunc)
         {
             int[] stackedInColumn = new int[dataModel.Width];
 
-            foreach (Vector2Int slot in spawnedSlots)
+            foreach (PlacedTile spawned in spawnedTiles)
             {
+                Vector2Int slot = spawned.position;
                 TileView view = tileViews[slot.x, slot.y];
-                TileType type = dataModel.GetTile(slot.x, slot.y);
 
-                view.UpdateVisuals(type, getSpriteFunc(type));
+                view.UpdateVisuals(spawned.type, getSpriteFunc(spawned.type));
                 view.SnapToPosition(new Vector2(slot.x, dataModel.Height + stackedInColumn[slot.x]));
                 view.DropToPosition(new Vector2(slot.x, slot.y));
 
@@ -103,7 +138,7 @@ namespace Match3Engine.View
             }
         }
 
-        // I'll call this to sync visuals after my command queue finishes processing
+        // Full repaint straight from the data grid. Only correct while nothing is animating.
         public void SyncVisualsWithData(System.Func<TileType, Sprite> getSpriteFunc)
         {
             for (int x = 0; x < dataModel.Width; x++)

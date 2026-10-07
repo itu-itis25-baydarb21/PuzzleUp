@@ -1,3 +1,5 @@
 ﻿<Solution>
-  <Project Path="Assembly-CSharp.csproj" />
+  <Project Path="Match3Engine.csproj" />
+  <Project Path="Match3Engine.Editor.csproj" />
+  <Project Path="Match3Engine.Tests.EditMode.csproj" />
 </Solution>

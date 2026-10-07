@@ -1,7 +1,5 @@
-using Match3Engine.Commands;
-using Match3Engine.Systems;
+using Match3Engine.Simulation;
 using Match3Engine.View;
-using System.Collections.Generic;
 using UnityEngine;
 using System.Collections;
 
@@ -14,47 +12,97 @@ namespace Match3Engine.Core
         public Sprite sprite;
     }
 
+    // Plays one level on screen. The simulation decides everything instantly;
+    // my job here is to replay what it reports, one animated step at a time.
     public class GameController : MonoBehaviour
     {
-        private BoardModel boardModel;
-        private CommandSystem commandSystem;
-        private MatchSystem matchSystem;
-        private GravitySystem gravitySystem;
-        private SpawnSystem spawnSystem;
-        private PowerUpSystem powerUpSystem; 
+        private GameSimulation simulation;
 
         // True from the moment a swap starts until the board has fully settled
         private bool isBusy;
 
-        [Header("Board Settings")]
-        public int boardWidth = 8;
-        public int boardHeight = 8;
-        public TileType[] availableTileTypes;
+        // Moves and goals as currently shown on screen. The simulation is always a full
+        // turn ahead of the animation, so I keep my own copy and advance it step by step.
+        public LevelProgress Progress { get; private set; }
+
+        // The game itself. A bot reads this to choose its move.
+        public GameSimulation Simulation => simulation;
+
+        // True while a move is being animated. Swaps sent now are ignored.
+        public bool IsBusy => isBusy;
+
+        // The seed the current attempt was dealt from
+        public int CurrentSeed { get; private set; }
+
+        [Header("Level")]
+        public LevelData level;
+
+        [Tooltip("The same seed always deals the same tiles. 0 picks a new seed every time.")]
+        public int seed;
 
         [Header("View References")]
         public BoardView boardView;
+        public LevelHud levelHud;
         public TileSpriteMapping[] tileSprites;
 
         private void Start()
         {
-            boardModel = new BoardModel(boardWidth, boardHeight);
+            if (level == null)
+            {
+                Debug.LogError("GameController has no level assigned.", this);
+                return;
+            }
 
-            commandSystem = new CommandSystem();
-            matchSystem = new MatchSystem(boardModel);
-            gravitySystem = new GravitySystem(boardModel);
-            spawnSystem = new SpawnSystem(boardModel, availableTileTypes);
-            powerUpSystem = new PowerUpSystem(boardModel); 
+            StartLevel(level);
+        }
 
-            boardView.InitializeBoard(boardModel);
+        // Puts a level on screen, replacing whatever was being played. The board is rebuilt,
+        // so the new level may be a different size.
+        public void StartLevel(LevelData newLevel)
+        {
+            // Anything still animating belongs to the old level
+            StopAllCoroutines();
+            isBusy = false;
 
-            boardView.CenterAndScaleCamera(boardWidth, boardHeight);
+            level = newLevel;
+            BeginAttempt();
 
-            spawnSystem.SpawnTiles();
+            boardView.InitializeBoard(simulation.Board);
+            boardView.CenterAndScaleCamera(level.width, level.height);
+
+            ShowSimulationState();
+        }
+
+        // A fresh game of the same level
+        private void BeginAttempt()
+        {
+            CurrentSeed = seed != 0 ? seed : System.Environment.TickCount;
+            simulation = new GameSimulation(level, CurrentSeed);
+        }
+
+        // Starts the level over. With seed 0 this deals a new board; with a fixed seed, the same one.
+        public void RestartLevel()
+        {
+            if (simulation == null || isBusy) return;
+
+            BeginAttempt();
+            boardView.SetBoard(simulation.Board);
+            ShowSimulationState();
+        }
+
+        // Jumps the screen straight to where the simulation is now, with no animation.
+        // Used at the start, and after a game was finished off-screen.
+        public void ShowSimulationState()
+        {
+            if (simulation == null || isBusy) return;
+
+            Progress = simulation.Progress.Clone();
             boardView.SyncVisualsWithData(GetSpriteForType);
+            levelHud.Refresh(Progress);
         }
 
         // Helper method to find the right image for my tile types
-        private Sprite GetSpriteForType(TileType type)
+        public Sprite GetSpriteForType(TileType type)
         {
             foreach (var mapping in tileSprites)
             {
@@ -66,119 +114,76 @@ namespace Match3Engine.Core
 
         public void ProcessPlayerSwap(Vector2Int posA, Vector2Int posB)
         {
+            // No more moves once the level has been won or lost
+            if (Progress == null || Progress.State != LevelState.Playing) return;
+
             // Ignoring swipes while the board is still animating, or ones that leave the board
             if (isBusy) return;
-            if (!boardModel.IsValidPosition(posA.x, posA.y) || !boardModel.IsValidPosition(posB.x, posB.y)) return;
+            if (!simulation.Board.IsValidPosition(posA.x, posA.y) || !simulation.Board.IsValidPosition(posB.x, posB.y)) return;
 
             // Starting my timeline routine so animations have time to play
-            StartCoroutine(SwapAndProcessRoutine(posA, posB));
+            StartCoroutine(PlayTurnRoutine(posA, posB));
         }
 
-        private IEnumerator SwapAndProcessRoutine(Vector2Int posA, Vector2Int posB)
+        private IEnumerator PlayTurnRoutine(Vector2Int posA, Vector2Int posB)
         {
             isBusy = true;
 
+            // The simulation resolves the whole move right now. Everything after this is animation.
+            TurnResult turn = simulation.PlayMove(posA, posB);
+
             boardView.SwapVisuals(posA, posB);
-
-            ICommand swapCmd = new SwapCommand(boardModel, posA, posB);
-            commandSystem.EnqueueCommand(swapCmd);
-            commandSystem.ProcessNextCommand();
-
             yield return new WaitForSeconds(0.25f);
 
-            TileType typeAtA = boardModel.GetTile(posA.x, posA.y);
-            TileType typeAtB = boardModel.GetTile(posB.x, posB.y);
-
-            bool isPowerUpA = powerUpSystem.IsPowerUp(typeAtA);
-            bool isPowerUpB = powerUpSystem.IsPowerUp(typeAtB);
-
-            if (isPowerUpA || isPowerUpB)
+            if (!turn.valid)
             {
-                HashSet<Vector2Int> explosionArea = new HashSet<Vector2Int>();
-
-                if (isPowerUpA) explosionArea.UnionWith(powerUpSystem.GetExplosionArea(posA, typeAtA, typeAtB));
-                if (isPowerUpB) explosionArea.UnionWith(powerUpSystem.GetExplosionArea(posB, typeAtB, typeAtA));
-
-                MatchResult powerUpResult = new MatchResult();
-                powerUpResult.matchedTiles = explosionArea;
-
-                yield return DestroyAndRefillRoutine(powerUpResult);
-                yield return RunGameplayPipelineRoutine(new Vector2Int(-1, -1), new Vector2Int(-1, -1));
-
-                isBusy = false;
-                yield break;
-            }
-
-            MatchResult matchResult = matchSystem.FindMatches(posA, posB);
-
-            if (matchResult.matchedTiles.Count == 0)
-            {
+                // The swap did nothing, so the tiles slide back and no move is spent
                 boardView.SwapVisuals(posA, posB);
-
-                ICommand revertCmd = new SwapCommand(boardModel, posA, posB);
-                commandSystem.EnqueueCommand(revertCmd);
-                commandSystem.ProcessNextCommand();
-
                 yield return new WaitForSeconds(0.25f);
 
                 isBusy = false;
                 yield break;
             }
 
-            // Passing the exact touch coordinates into my pipeline so it knows where to spawn specials!
-            yield return RunGameplayPipelineRoutine(posA, posB);
+            Progress.UseMove();
+            levelHud.Refresh(Progress);
+
+            foreach (CascadeStep step in turn.steps)
+            {
+                yield return PlayStepRoutine(step);
+            }
+
+            if (turn.shuffled)
+            {
+                // No moves were left, so the simulation mixed the board
+                boardView.SyncVisualsWithData(GetSpriteForType);
+                yield return new WaitForSeconds(0.3f);
+            }
+
+            // The board has settled, so now I can show if the level is won or lost
+            Progress.Evaluate();
+            levelHud.Refresh(Progress);
 
             isBusy = false;
         }
 
-        private IEnumerator RunGameplayPipelineRoutine(Vector2Int initialSwapA, Vector2Int initialSwapB)
+        // Shows one cascade: tiles disappear, then the survivors and the new tiles fall together
+        private IEnumerator PlayStepRoutine(CascadeStep step)
         {
-            bool cascadeHappened = true;
-
-            // Tracking the current swap positions. 
-            Vector2Int currentSwapA = initialSwapA;
-            Vector2Int currentSwapB = initialSwapB;
-
-            while (cascadeHappened)
+            foreach (PlacedTile tile in step.destroyed)
             {
-                cascadeHappened = false;
-
-                // Using the actual coordinates for the first match, and (-1,-1) for cascades
-                MatchResult matchResult = matchSystem.FindMatches(currentSwapA, currentSwapB);
-
-                if (matchResult.matchedTiles.Count > 0)
-                {
-                    cascadeHappened = true;
-
-                    yield return DestroyAndRefillRoutine(matchResult);
-
-                    // Resetting the swap coordinates for any chain reactions (cascades)
-                    currentSwapA = new Vector2Int(-1, -1);
-                    currentSwapB = new Vector2Int(-1, -1);
-                }
+                Progress.Collect(tile.type);
             }
-        }
+            levelHud.Refresh(Progress);
 
-        // Clears the given tiles, then lets the survivors and the new tiles fall into place together
-        private IEnumerator DestroyAndRefillRoutine(MatchResult result)
-        {
-            ICommand destroyCmd = new DestroyCommand(boardModel, result);
-            commandSystem.EnqueueCommand(destroyCmd);
-            commandSystem.ProcessNextCommand();
-            boardView.SyncVisualsWithData(GetSpriteForType);
+            boardView.ClearTiles(step.destroyed);
+            boardView.PlaceTiles(step.specials, GetSpriteForType);
             yield return new WaitForSeconds(0.2f);
 
-            ICommand gravityCmd = new GravityCommand(gravitySystem);
-            commandSystem.EnqueueCommand(gravityCmd);
-            commandSystem.ProcessNextCommand();
-            boardView.DropTiles(gravitySystem.LastMoves);
+            boardView.DropTiles(step.falls);
+            boardView.DropNewTiles(step.spawns, GetSpriteForType);
 
-            ICommand spawnCmd = new SpawnCommand(spawnSystem);
-            commandSystem.EnqueueCommand(spawnCmd);
-            commandSystem.ProcessNextCommand();
-            boardView.DropNewTiles(spawnSystem.LastSpawned, GetSpriteForType);
-
-            // Waiting for every tile to land before I look for the next cascade
+            // Waiting for every tile to land before I show the next cascade
             yield return new WaitUntil(() => !boardView.IsDropping);
             yield return new WaitForSeconds(0.1f);
         }
