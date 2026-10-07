@@ -7,8 +7,8 @@ A match-3 puzzle prototype built in Unity. The code lives in a single namespace 
 | Unity version | 6000.3.10f1 (Unity 6) |
 | Render pipeline | Built-in, 2D feature set |
 | Input | New Input System package (`com.unity.inputsystem` 1.18.0), polled directly |
-| Assemblies | `Match3Engine` (all game code, `Assets/Scripts`) and `Match3Engine.Tests.EditMode` (`Assets/Tests/EditMode`) |
-| Tests | 7 edit-mode tests that run whole games with no scene |
+| Assemblies | `Match3Engine` (all game code, `Assets/Scripts`), `Match3Engine.Editor` (`Assets/Editor`) and `Match3Engine.Tests.EditMode` (`Assets/Tests/EditMode`) |
+| Tests | 14 edit-mode tests that run whole games with no scene |
 | Scene | `Assets/Scenes/SampleScene.unity` (the only scene in the build) |
 
 ## 1. Project layout
@@ -42,13 +42,17 @@ Assets/
 │   │   └── InputSystem.cs        MonoBehaviour: swipe → swap request
 │   ├── Simulation/               A whole game with no visuals (pure C#)
 │   │   ├── GameSimulation.cs     Resolves a full move instantly; owns board, progress, systems
-│   │   └── TurnResult.cs         What a move did, as steps the view can replay
+│   │   ├── TurnResult.cs         What a move did, as steps the view can replay
+│   │   └── MovePreview.cs        What a swap would destroy straight away
 │   ├── View/                     Presentation
 │   │   ├── BoardView.cs          Grid of TileViews, camera fitting
 │   │   ├── TileView.cs           One sprite, lerps to a target position
 │   │   └── LevelHud.cs           Moves, goals and result text (uGUI + TextMesh Pro)
-│   └── AI/                       Empty (placeholder)
-├── Tests/EditMode/               GameSimulationTests + test assembly definition
+│   └── AI/                       Simulated players (pure C#)
+│       ├── Bots.cs               IBot, the four strategies, SkillBot, BotFactory
+│       └── BatchRunner.cs        Plays a level many times and collects the results
+├── Editor/BotBatchMenu.cs        Menu command: Puzzle Up > Run Bot Batch
+├── Tests/EditMode/               GameSimulationTests, BotTests + test assembly definition
 ├── Levels/Level_01.asset         The level the scene loads
 ├── TextMesh Pro/                 TMP essential resources (imported package content)
 ├── InputSystem_Actions.inputactions   Unity default asset; not used by game code
@@ -160,6 +164,11 @@ A `TurnResult` holds `valid`, `shuffled`, and one `CascadeStep` per cascade. Eac
 
 **Starting board.** `SpawnSystem.FillWithoutMatches` never places a third tile in a row, and the fill is repeated until `MoveFinder` finds at least one move.
 
+**Trying a move without playing it.** Bots need this, and neither call changes the game:
+
+- `PreviewMove(a, b)` returns a `MovePreview`: how many tiles the swap destroys straight away, how many of those a goal still needs, and how many power-ups it creates. Cascades are not included.
+- `Clone(seed)` returns an independent copy of the game in its current state. The copy has its own random generator, so the tiles it spawns are a guess at the future, not a look at what the real game will deal.
+
 **Shuffle.** When a turn ends with no valid move, the tiles on the board are randomly rearranged until there are no matches and at least one move. If 50 attempts fail, a fresh board is dealt.
 
 ### On screen (animated)
@@ -237,7 +246,26 @@ Polls `Mouse.current` and `Touchscreen.current` each frame. Press and release po
 
 Note the class shares its name with the `UnityEngine.InputSystem` namespace; it resolves correctly because it lives in `Match3Engine.Systems`.
 
-## 6. View
+## 6. Bots
+
+A bot is anything implementing `IBot`: given the simulation and the list of valid moves, return one. Each bot has its own seeded random generator, so a bot and a seed always make the same choices.
+
+| Bot | How it chooses |
+|---|---|
+| `RandomBot` | Any valid move |
+| `GreedyBot` | The move whose `PreviewMove` destroys the most tiles |
+| `GoalAwareBot` | Highest score of `goal tiles × 10 + power-ups created × 5 + tiles destroyed` |
+| `LookAheadBot` | Shortlists the 6 best moves by the goal-aware score, plays each on a `Clone`, and scores the goal progress actually made (cascades included) plus the best goal-aware follow-up move. A copy that wins outright scores highest. |
+
+Ties are broken at random. `SkillBot` wraps a strategy with a skill from 0 to 1: each turn it uses the strategy with that probability and plays a random valid move otherwise. `BotFactory.Create(strategy, seed)` and `BotFactory.Create(strategy, skill, seed)` build them.
+
+### `BatchRunner`
+`PlayGame(level, bot, seed)` plays one whole game headless and returns a `GameResult { won, movesLeft, goalProgress }`. `Run(level, createBot, games, firstSeed)` plays many; game *i* uses seed `firstSeed + i` for both the board and the bot, so the same call always returns the same `BatchResult`. That result keeps every `GameResult` and offers `PassRate`, `AverageMovesLeft` (wins only) and `AverageProgressWhenLost`.
+
+### Running a batch from the editor
+**Puzzle Up → Run Bot Batch** plays the selected `LevelData` asset (or, with none selected, the level on the open scene's `GameController`) 1,000 times with each strategy and with `GoalAwareBot` at skill 0.25, 0.5 and 0.75, and prints a table to the Console. The whole run takes roughly 25 seconds, most of it the look-ahead bot.
+
+## 7. View
 
 ### `BoardView`
 - `InitializeBoard(model)` — instantiates one `TilePrefab` per cell under the `Board` transform and stores them in a `TileView[,]` that mirrors the model. Also creates a `SpriteMask` the size of the board at runtime and sets every tile to `VisibleInsideMask`, so tiles waiting above the board are hidden until they fall into it.
@@ -260,7 +288,7 @@ Holds a `SpriteRenderer`. `UpdateVisuals` assigns the sprite and rescales it to 
 ### `LevelHud`
 Sits on the `HudCanvas`. `Refresh(progress)` writes the moves left and each goal's remaining count (or "Done") into two TextMesh Pro labels, and shows a dimmed full-screen panel with "Level Complete!" or "Out of Moves" when the level ends. It only displays what the controller gives it.
 
-## 7. Scene wiring
+## 8. Scene wiring
 
 `SampleScene` has four root objects:
 
@@ -279,24 +307,26 @@ Sits on the `HudCanvas`. `Refresh(progress)` writes the moves left and each goal
 
 `tileSprites` on `GameController` has nine mappings — the five colours above plus the four power-ups.
 
-## 8. Known limitations
+## 9. Known limitations
 
 Behaviours visible in the current code that are worth knowing before extending it:
 
 1. **Power-ups do not chain.** A power-up caught in another explosion is simply removed without firing.
 2. **ColorBomb + power-up** destroys only tiles of that power-up's type, since the swapped tile's type is used as the target "colour".
-3. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is no restart or next level (stop and press Play again), no score, audio or persistence. `Assets/Scripts/AI` is empty.
+3. **The game layer is minimal** — one level with a move limit and collect goals, and a text HUD. There is no restart or next level (stop and press Play again), no score, audio or persistence.
 4. **A shuffle is not animated.** The board is simply repainted in its new arrangement.
+5. **Bots only run from an editor menu.** Nothing in the game itself starts a batch or shows its results yet, and no bot plays on the animated board.
+6. **The look-ahead bot is slow** compared with the others — about 14 seconds per 1,000 games on `Level_01`, against 1 to 3 seconds.
 
-## 9. Extension points
+## 10. Extension points
 
 - **New tile colour** — add it inside the `Red..Pink` range of `TileType`, then add it to `availableTileTypes` and `tileSprites` in the Inspector.
 - **New power-up** — add the enum value after the colours, extend `PowerUpSystem.IsPowerUp` / `GetExplosionArea`, add a creation rule in `MatchSystem`, and map a sprite.
 - **New board action** — implement `ICommand`, run it from `GameSimulation`, and report its effect in `CascadeStep` so the view can show it.
-- **A bot** — construct a `GameSimulation(level, seed)`, pick from `GetValidMoves()`, call `PlayMove`, and repeat until `Progress.State` is no longer `Playing`. No scene is needed.
+- **New bot** — implement `IBot` (or extend `ScoringBot` and write only `Score`), then add it to `BotStrategy` and `BotFactory`.
 - **New level** — create a `LevelData` asset and assign it to `GameController.level`.
 - **New goal type** — `LevelGoal` only knows "collect a colour"; other goals need a new field there and a rule in `LevelProgress`.
 
-## 10. Version control
+## 11. Version control
 
 The project root is a git repository on branch `main`, with `origin` at `github.com/itu-itis25-baydarb21/PuzzleUp`. `Assets/`, `Packages/` and `ProjectSettings/` are tracked; `Library/`, `Temp/`, `Logs/`, `UserSettings/` and generated solution/project files are excluded by the standard Unity `.gitignore`.

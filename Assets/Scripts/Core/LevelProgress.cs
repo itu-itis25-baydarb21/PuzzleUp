@@ -21,6 +21,9 @@ namespace Match3Engine.Core
         private List<LevelGoal> goals = new List<LevelGoal>();
         private Dictionary<TileType, int> remaining = new Dictionary<TileType, int>();
 
+        // Every goal amount added together, so progress can be given as a fraction
+        private int totalRequired;
+
         public LevelProgress(int moveLimit, IEnumerable<LevelGoal> levelGoals)
         {
             MovesLeft = moveLimit;
@@ -29,6 +32,8 @@ namespace Match3Engine.Core
 
             foreach (LevelGoal goal in levelGoals)
             {
+                totalRequired += goal.amount;
+
                 // Two goals for the same colour just add up
                 if (remaining.ContainsKey(goal.type))
                 {
@@ -46,6 +51,38 @@ namespace Match3Engine.Core
         public int GetRemaining(TileType type)
         {
             return remaining.TryGetValue(type, out int amount) ? amount : 0;
+        }
+
+        // How many goal tiles are still needed in total
+        public int TotalRemaining
+        {
+            get
+            {
+                int total = 0;
+                foreach (int amount in remaining.Values) total += amount;
+                return total;
+            }
+        }
+
+        // From 0 (nothing collected) to 1 (every goal complete)
+        public float GoalProgress
+        {
+            get
+            {
+                if (totalRequired <= 0) return 1f;
+                return 1f - (float)TotalRemaining / totalRequired;
+            }
+        }
+
+        // An independent copy, so a bot can try a move without touching the real game
+        public LevelProgress Clone()
+        {
+            LevelProgress copy = new LevelProgress(MovesLeft, null);
+            copy.State = State;
+            copy.totalRequired = totalRequired;
+            copy.goals = new List<LevelGoal>(goals);
+            copy.remaining = new Dictionary<TileType, int>(remaining);
+            return copy;
         }
 
         public bool AllGoalsComplete
